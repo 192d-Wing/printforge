@@ -13,7 +13,9 @@ use sqlx::PgPool;
 
 use crate::discovery::{DiscoveryMethod, PrinterLocation};
 use crate::error::FleetError;
-use crate::inventory::{FleetSummary, PrinterQuery, PrinterRecord, PrinterUpdate};
+use crate::inventory::{
+    FleetSummary, PrinterQuery, PrinterRecord, PrinterStatusCounts, PrinterUpdate,
+};
 use crate::repository::PrinterRepository;
 
 /// `PostgreSQL`-backed printer inventory repository.
@@ -430,6 +432,49 @@ impl PrinterRepository for PgPrinterRepository {
         })
     }
 
+    async fn count_by_status(
+        &self,
+        installations: &[String],
+    ) -> Result<PrinterStatusCounts, FleetError> {
+        // Two variants: filtered (by installations) or unfiltered. Keeping
+        // them separate avoids a no-op `ANY($1)` bind on the hot path.
+        let row = if installations.is_empty() {
+            sqlx::query_as::<_, StatusCountsRow>(
+                "SELECT \
+                 COUNT(*) FILTER (WHERE status = 'Online')::bigint AS online, \
+                 COUNT(*) FILTER (WHERE status = 'Offline')::bigint AS offline, \
+                 COUNT(*) FILTER (WHERE status = 'Error')::bigint AS error, \
+                 COUNT(*) FILTER (WHERE status = 'Maintenance')::bigint AS maintenance, \
+                 COUNT(*) FILTER (WHERE status = 'Printing')::bigint AS printing \
+                 FROM printers",
+            )
+            .fetch_one(&self.pool)
+            .await
+        } else {
+            sqlx::query_as::<_, StatusCountsRow>(
+                "SELECT \
+                 COUNT(*) FILTER (WHERE status = 'Online')::bigint AS online, \
+                 COUNT(*) FILTER (WHERE status = 'Offline')::bigint AS offline, \
+                 COUNT(*) FILTER (WHERE status = 'Error')::bigint AS error, \
+                 COUNT(*) FILTER (WHERE status = 'Maintenance')::bigint AS maintenance, \
+                 COUNT(*) FILTER (WHERE status = 'Printing')::bigint AS printing \
+                 FROM printers WHERE location_installation = ANY($1)",
+            )
+            .bind(installations.to_vec())
+            .fetch_one(&self.pool)
+            .await
+        }
+        .map_err(FleetError::Repository)?;
+
+        Ok(PrinterStatusCounts {
+            online: u64::try_from(row.online).unwrap_or(0),
+            offline: u64::try_from(row.offline).unwrap_or(0),
+            error: u64::try_from(row.error).unwrap_or(0),
+            maintenance: u64::try_from(row.maintenance).unwrap_or(0),
+            printing: u64::try_from(row.printing).unwrap_or(0),
+        })
+    }
+
     async fn list_ids(&self) -> Result<Vec<PrinterId>, FleetError> {
         let rows: Vec<(String,)> = sqlx::query_as("SELECT id FROM printers ORDER BY id")
             .fetch_all(&self.pool)
@@ -452,6 +497,16 @@ struct FleetSummaryRow {
     maintenance_count: i64,
     average_health_score: f64,
     critical_supply_count: i64,
+}
+
+/// Internal row type for [`count_by_status`](PgPrinterRepository::count_by_status).
+#[derive(sqlx::FromRow)]
+struct StatusCountsRow {
+    online: i64,
+    offline: i64,
+    error: i64,
+    maintenance: i64,
+    printing: i64,
 }
 
 #[cfg(test)]

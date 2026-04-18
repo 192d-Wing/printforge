@@ -12,7 +12,9 @@ use std::future::Future;
 use pf_common::fleet::PrinterId;
 
 use crate::error::FleetError;
-use crate::inventory::{FleetSummary, PrinterQuery, PrinterRecord, PrinterUpdate};
+use crate::inventory::{
+    FleetSummary, PrinterQuery, PrinterRecord, PrinterStatusCounts, PrinterUpdate,
+};
 
 /// Trait for printer inventory persistence operations.
 ///
@@ -76,6 +78,22 @@ pub trait PrinterRepository: Send + Sync {
     ///
     /// Returns [`FleetError::Repository`] on database failure.
     fn summary(&self) -> impl Future<Output = Result<FleetSummary, FleetError>> + Send;
+
+    /// Count printers by operational status, optionally scoped to a set of
+    /// installations. An empty `installations` slice means "no installation
+    /// filter" (count across the entire fleet).
+    ///
+    /// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+    /// (Callers that hold a per-site scope MUST pass only their authorized
+    /// installations.)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FleetError::Repository`] on database failure.
+    fn count_by_status(
+        &self,
+        installations: &[String],
+    ) -> impl Future<Output = Result<PrinterStatusCounts, FleetError>> + Send;
 
     /// List all printer IDs in the inventory (for polling scheduler).
     ///

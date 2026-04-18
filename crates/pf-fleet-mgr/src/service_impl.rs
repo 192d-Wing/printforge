@@ -14,7 +14,7 @@ use crate::error::FleetError;
 use crate::health::{
     HealthInput, HealthWeights, compute_health_score,
 };
-use crate::inventory::{PrinterQuery, PrinterRecord};
+use crate::inventory::{PrinterQuery, PrinterRecord, PrinterStatusCounts};
 use crate::repository::PrinterRepository;
 use crate::service::{
     FleetService, PrinterDetail, PrinterStatusInfo, PrinterSummary,
@@ -175,6 +175,13 @@ impl<R: PrinterRepository + 'static> FleetService for FleetServiceImpl<R> {
             let record = self.repo.get_by_id(&id).await?;
             to_status_info(&record, &self.health_weights)
         })
+    }
+
+    fn status_summary(
+        &self,
+        installations: Vec<String>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<PrinterStatusCounts, FleetError>> + Send + '_>> {
+        Box::pin(async move { self.repo.count_by_status(&installations).await })
     }
 }
 
@@ -364,6 +371,29 @@ mod tests {
             let map = self.printers.lock().unwrap();
             Ok(map.values().map(|r| r.id.clone()).collect())
         }
+
+        async fn count_by_status(
+            &self,
+            installations: &[String],
+        ) -> Result<PrinterStatusCounts, FleetError> {
+            let map = self.printers.lock().unwrap();
+            let mut counts = PrinterStatusCounts::default();
+            for r in map.values() {
+                if !installations.is_empty()
+                    && !installations.contains(&r.location.installation)
+                {
+                    continue;
+                }
+                match r.status {
+                    PrinterStatus::Online => counts.online += 1,
+                    PrinterStatus::Offline => counts.offline += 1,
+                    PrinterStatus::Error => counts.error += 1,
+                    PrinterStatus::Maintenance => counts.maintenance += 1,
+                    PrinterStatus::Printing => counts.printing += 1,
+                }
+            }
+            Ok(counts)
+        }
     }
 
     fn make_test_record(id: &str, status: PrinterStatus) -> PrinterRecord {
@@ -444,6 +474,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(page2.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn nist_cm8_status_summary_counts_by_status() {
+        // NIST CM-8: System Component Inventory — per-status counts for the
+        // dashboard overview.
+        let records = vec![
+            make_test_record("PRN-0001", PrinterStatus::Online),
+            make_test_record("PRN-0002", PrinterStatus::Online),
+            make_test_record("PRN-0003", PrinterStatus::Offline),
+            make_test_record("PRN-0004", PrinterStatus::Error),
+            make_test_record("PRN-0005", PrinterStatus::Printing),
+        ];
+        let repo = MockRepository::with_records(records);
+        let svc = FleetServiceImpl::new(repo);
+
+        let counts = svc.status_summary(Vec::new()).await.unwrap();
+        assert_eq!(counts.online, 2);
+        assert_eq!(counts.offline, 1);
+        assert_eq!(counts.error, 1);
+        assert_eq!(counts.maintenance, 0);
+        assert_eq!(counts.printing, 1);
+    }
+
+    #[tokio::test]
+    async fn nist_ac3_status_summary_honors_installation_scope() {
+        // NIST AC-3: Access Enforcement — a site-scoped caller sees only
+        // their installations' printers.
+        let mut rec_a = make_test_record("PRN-0001", PrinterStatus::Online);
+        rec_a.location.installation = "langley".to_string();
+        let mut rec_b = make_test_record("PRN-0002", PrinterStatus::Online);
+        rec_b.location.installation = "ramstein".to_string();
+        let mut rec_c = make_test_record("PRN-0003", PrinterStatus::Offline);
+        rec_c.location.installation = "langley".to_string();
+
+        let repo = MockRepository::with_records(vec![rec_a, rec_b, rec_c]);
+        let svc = FleetServiceImpl::new(repo);
+
+        let counts = svc
+            .status_summary(vec!["langley".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(counts.online, 1);
+        assert_eq!(counts.offline, 1);
     }
 
     #[tokio::test]

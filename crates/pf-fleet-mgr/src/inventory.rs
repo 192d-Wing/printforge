@@ -120,6 +120,28 @@ pub struct PrinterQuery {
     pub offset: Option<u32>,
 }
 
+/// Counts of printers grouped by [`PrinterStatus`], scoped by installation.
+///
+/// Returned by [`PrinterRepository::count_by_status`] and
+/// [`FleetService::status_summary`](crate::FleetService::status_summary) for
+/// the dashboard fleet-overview widget. Fields correspond 1:1 to the variants
+/// of [`PrinterStatus`].
+///
+/// **NIST 800-53 Rev 5:** CM-8 — System Component Inventory
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PrinterStatusCounts {
+    /// Printers reporting `Online`.
+    pub online: u64,
+    /// Printers reporting `Offline`.
+    pub offline: u64,
+    /// Printers reporting `Error`.
+    pub error: u64,
+    /// Printers reporting `Maintenance`.
+    pub maintenance: u64,
+    /// Printers reporting `Printing`.
+    pub printing: u64,
+}
+
 /// Summary statistics for the fleet dashboard.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FleetSummary {

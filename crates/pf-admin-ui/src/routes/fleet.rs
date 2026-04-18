@@ -14,7 +14,7 @@ use axum::{Json, Router};
 use pf_auth::middleware::RequireAuth;
 use pf_common::fleet::SupplyLevel;
 use pf_common::identity::SiteId;
-use pf_fleet_mgr::{PrinterQuery, PrinterSummary};
+use pf_fleet_mgr::{PrinterQuery, PrinterStatusCounts, PrinterSummary};
 
 use crate::error::AdminUiError;
 use crate::fleet_view::{FleetPrinterSummary, FleetStatusSummary, FleetViewResponse};
@@ -31,25 +31,48 @@ pub fn router() -> Router<AdminState> {
         .route("/printers", get(list_printers))
 }
 
-/// `GET /fleet/overview` — Return aggregated fleet status summary.
+/// `GET /fleet/overview` — Return aggregated fleet status summary, scoped
+/// to the caller's authorized installations.
 ///
-/// Currently returns zeros; real aggregation requires a scope-aware
-/// `FleetService::status_summary` that does not exist yet. Leaving the route
-/// live so the admin SPA can wire its dashboard and get consistent 200
-/// responses during development.
+/// Backed by
+/// [`FleetService::status_summary`](pf_fleet_mgr::FleetService::status_summary).
 ///
 /// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+///
+/// # Errors
+///
+/// - `AdminUiError::AccessDenied` if the caller lacks an admin role.
+/// - `AdminUiError::ServiceUnavailable` if the fleet service is not wired.
+/// - `AdminUiError::Internal` on underlying fleet-service failure.
 async fn fleet_overview(
+    State(state): State<AdminState>,
     RequireAuth(identity): RequireAuth,
 ) -> Result<Json<FleetStatusSummary>, AdminUiError> {
-    let _scope = derive_scope(&identity.roles)?;
-    Ok(Json(FleetStatusSummary {
-        online: 0,
-        offline: 0,
-        error: 0,
-        maintenance: 0,
-        printing: 0,
-    }))
+    let scope = derive_scope(&identity.roles)?;
+    let fleet = state
+        .fleet
+        .as_ref()
+        .ok_or(AdminUiError::ServiceUnavailable { service: "fleet" })?;
+
+    let counts = fleet
+        .status_summary(scope_to_installations(&scope))
+        .await
+        .map_err(|e| AdminUiError::Internal {
+            source: Box::new(e),
+        })?;
+
+    Ok(Json(to_fleet_status_summary(&counts)))
+}
+
+/// Map the fleet-mgr [`PrinterStatusCounts`] onto the admin-ui wire type.
+fn to_fleet_status_summary(c: &PrinterStatusCounts) -> FleetStatusSummary {
+    FleetStatusSummary {
+        online: c.online,
+        offline: c.offline,
+        error: c.error,
+        maintenance: c.maintenance,
+        printing: c.printing,
+    }
 }
 
 /// `GET /fleet/printers` — Return a scoped printer list.
@@ -252,6 +275,23 @@ mod tests {
         };
         let json = serde_json::to_string(&summary).unwrap();
         assert!(json.contains("\"online\":30"));
+    }
+
+    #[test]
+    fn to_fleet_status_summary_copies_every_bucket() {
+        let counts = PrinterStatusCounts {
+            online: 30,
+            offline: 5,
+            error: 2,
+            maintenance: 3,
+            printing: 10,
+        };
+        let summary = to_fleet_status_summary(&counts);
+        assert_eq!(summary.online, 30);
+        assert_eq!(summary.offline, 5);
+        assert_eq!(summary.error, 2);
+        assert_eq!(summary.maintenance, 3);
+        assert_eq!(summary.printing, 10);
     }
 
     #[test]

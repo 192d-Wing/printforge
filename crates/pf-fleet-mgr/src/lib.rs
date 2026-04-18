@@ -32,7 +32,9 @@ pub use config::FleetConfig;
 pub use discovery::{DiscoveredPrinter, DiscoveryMethod, PrinterLocation};
 pub use error::FleetError;
 pub use health::{HealthInput, HealthScore, HealthWeights, compute_health_score};
-pub use inventory::{FleetSummary, PrinterQuery, PrinterRecord, PrinterUpdate};
+pub use inventory::{
+    FleetSummary, PrinterQuery, PrinterRecord, PrinterStatusCounts, PrinterUpdate,
+};
 pub use repository::PrinterRepository;
 pub use service::{FleetService, PrinterDetail, PrinterStatusInfo, PrinterSummary};
 pub use service_impl::FleetServiceImpl;

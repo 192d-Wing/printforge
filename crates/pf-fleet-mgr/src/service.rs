@@ -21,7 +21,7 @@ use pf_common::fleet::{PrinterId, PrinterModel, PrinterStatus, SupplyLevel};
 use crate::discovery::PrinterLocation;
 use crate::error::FleetError;
 use crate::health::HealthScore;
-use crate::inventory::PrinterQuery;
+use crate::inventory::{PrinterQuery, PrinterStatusCounts};
 
 /// A concise printer summary for list views and dashboards.
 ///
@@ -144,4 +144,20 @@ pub trait FleetService: Send + Sync {
         &self,
         id: PrinterId,
     ) -> Pin<Box<dyn Future<Output = Result<PrinterStatusInfo, FleetError>> + Send + '_>>;
+
+    /// Return per-status printer counts for the dashboard fleet-overview
+    /// widget, optionally scoped to a set of installations.
+    ///
+    /// An empty `installations` vector means "no installation filter" (count
+    /// across the entire fleet).
+    ///
+    /// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FleetError::Repository`] on persistence failure.
+    fn status_summary(
+        &self,
+        installations: Vec<String>,
+    ) -> Pin<Box<dyn Future<Output = Result<PrinterStatusCounts, FleetError>> + Send + '_>>;
 }
