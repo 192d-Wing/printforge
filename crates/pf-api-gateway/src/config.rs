@@ -59,6 +59,40 @@ pub struct GatewayConfig {
     pub shutdown_timeout_secs: u64,
     /// Background job configuration (retention sweeps, report worker).
     pub background: BackgroundConfig,
+    /// Reports object-storage configuration.
+    pub reports: ReportsConfig,
+}
+
+/// Configuration for the report artifact upload path.
+///
+/// When `bucket` is empty, the report worker still runs and marks rows
+/// `Ready` with the correct row count, but `output_location` stays
+/// `None` — no artifact is written. This is the honest dev-mode
+/// default: deployments without object storage aren't blocked from
+/// running reports, they just don't get downloadable files.
+///
+/// **NIST 800-53 Rev 5:** AU-11 — Audit Record Retention
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportsConfig {
+    /// Object-storage bucket for report artifacts. Empty disables uploads.
+    pub bucket: String,
+    /// Optional endpoint override for S3-compatible stores (`MinIO`,
+    /// `RustFS`). Absent ⇒ default AWS endpoints via `aws-config`.
+    pub endpoint_url: Option<String>,
+    /// AWS region. Required by the SDK even for S3-compatible stores;
+    /// use `us-gov-west-1` for `GovCloud`, `us-east-1` for most dev
+    /// setups.
+    pub region: String,
+}
+
+impl Default for ReportsConfig {
+    fn default() -> Self {
+        Self {
+            bucket: String::new(),
+            endpoint_url: None,
+            region: "us-east-1".to_string(),
+        }
+    }
 }
 
 /// Configuration for background cron-like tasks spawned at server startup.
@@ -111,6 +145,7 @@ impl Default for GatewayConfig {
             max_upload_size: 52_428_800, // 50 MiB
             shutdown_timeout_secs: 30,
             background: BackgroundConfig::default(),
+            reports: ReportsConfig::default(),
         }
     }
 }
@@ -249,6 +284,16 @@ impl GatewayConfig {
             cfg.background.report_poll_interval_secs = v.parse().map_err(|e| {
                 anyhow::anyhow!("invalid PF_GW_REPORT_POLL_INTERVAL '{v}': {e}")
             })?;
+        }
+
+        if let Ok(v) = std::env::var("PF_GW_REPORTS_S3_BUCKET") {
+            cfg.reports.bucket = v;
+        }
+        if let Ok(v) = std::env::var("PF_GW_REPORTS_S3_ENDPOINT") {
+            cfg.reports.endpoint_url = Some(v);
+        }
+        if let Ok(v) = std::env::var("PF_GW_REPORTS_S3_REGION") {
+            cfg.reports.region = v;
         }
 
         Ok(cfg)

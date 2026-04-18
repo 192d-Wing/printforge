@@ -145,7 +145,9 @@ pub async fn run(config: GatewayConfig) -> Result<(), Box<dyn std::error::Error 
     if let (Some(reports), Some(accounting)) =
         (state.report_service.clone(), state.accounting_service.clone())
     {
-        let generator = crate::reports_generator::build_report_generator(accounting);
+        let uploader = build_report_uploader(&state.config.reports).await;
+        let generator =
+            crate::reports_generator::build_report_generator(accounting, uploader);
         if let Some(handle) = background::spawn_report_worker(
             reports,
             generator,
@@ -176,6 +178,40 @@ pub async fn run(config: GatewayConfig) -> Result<(), Box<dyn std::error::Error 
 
     info!("API gateway shut down cleanly");
     Ok(())
+}
+
+/// Construct a [`ReportUploader`] from config when a bucket is set.
+///
+/// Returns `None` when `bucket` is empty — this is the honest dev-mode
+/// default, letting deployments without object storage run the gateway
+/// and generate reports (row counts only) without failing at startup.
+async fn build_report_uploader(
+    cfg: &crate::config::ReportsConfig,
+) -> Option<Arc<crate::reports_generator::ReportUploader>> {
+    if cfg.bucket.is_empty() {
+        return None;
+    }
+
+    let region = aws_sdk_s3::config::Region::new(cfg.region.clone());
+    let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest()).region(region);
+    if let Some(ref endpoint) = cfg.endpoint_url {
+        loader = loader.endpoint_url(endpoint);
+    }
+    let shared = loader.load().await;
+    let mut s3_builder = aws_sdk_s3::config::Builder::from(&shared);
+    if cfg.endpoint_url.is_some() {
+        // S3-compatible stores (MinIO, RustFS) need path-style addressing
+        // because they can't do virtual-host-style DNS for arbitrary buckets.
+        s3_builder = s3_builder.force_path_style(true);
+    }
+    let client = aws_sdk_s3::Client::from_conf(s3_builder.build());
+
+    info!(bucket = %cfg.bucket, "report artifact uploads enabled");
+
+    Some(Arc::new(crate::reports_generator::ReportUploader {
+        client,
+        bucket: cfg.bucket.clone(),
+    }))
 }
 
 /// Wait for a shutdown signal (`SIGTERM` or `Ctrl+C`), then allow a grace

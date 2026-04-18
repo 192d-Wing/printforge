@@ -5,29 +5,50 @@
 //!
 //! The generator is a [`GeneratorFn`](pf_reports::GeneratorFn) closure that
 //! dispatches on [`ReportKind`](pf_reports::ReportKind) and calls into the
-//! appropriate domain service to produce a report's row count. Artifact
-//! writing (S3 / `RustFS`) is intentionally NOT implemented here yet — the
-//! worker sets `output_location = None` and logs a TODO; a follow-up slice
-//! will wire up aws-sdk-s3.
+//! appropriate domain service to produce a report. On kinds that are wired,
+//! the generator also serializes the result to CSV and uploads to object
+//! storage via [`ReportUploader`] when one is configured; otherwise
+//! `output_location` stays `None` and the row count alone is reported.
 //!
 //! Unimplemented kinds return `Err(reason)` so the worker records the
 //! failure via `mark_failed` with a clear diagnostic shown in the admin UI.
 //!
 //! **NIST 800-53 Rev 5:** AU-12 — Audit Record Generation
 
+use std::fmt::Write;
 use std::sync::Arc;
 
-use pf_accounting::AccountingService;
-use pf_reports::{GenerationOutcome, GeneratorFn, ReportKind};
+use aws_sdk_s3::primitives::ByteStream;
+use pf_accounting::{AccountingService, ChargebackReport};
+use pf_reports::{GenerationOutcome, GeneratorFn, ReportFormat, ReportKind, ReportRecord};
 
-/// Build a [`GeneratorFn`] closure wired to the given domain services.
+/// Handle for uploading report artifacts to object storage.
 ///
-/// The returned closure captures `Arc` handles so the worker task can hold
-/// it for the lifetime of the process.
+/// Constructed at startup from [`ReportsConfig`](crate::config::ReportsConfig);
+/// when the configured bucket is empty the gateway never builds one, and the
+/// generator simply skips the upload step.
+pub struct ReportUploader {
+    /// S3 client wired to the configured region + optional endpoint override.
+    pub client: aws_sdk_s3::Client,
+    /// Destination bucket.
+    pub bucket: String,
+}
+
+/// Build a [`GeneratorFn`] closure wired to the given domain services and
+/// an optional artifact uploader.
+///
+/// Generators that can serialize to CSV/JSON will upload when `uploader`
+/// is `Some` and return the `s3://bucket/key` URI in `output_location`.
+/// When `uploader` is `None`, the generator still runs and row counts are
+/// accurate — the admin UI just won't surface a download link.
 #[must_use]
-pub fn build_report_generator(accounting: Arc<dyn AccountingService>) -> GeneratorFn {
+pub fn build_report_generator(
+    accounting: Arc<dyn AccountingService>,
+    uploader: Option<Arc<ReportUploader>>,
+) -> GeneratorFn {
     Arc::new(move |record| {
         let accounting = accounting.clone();
+        let uploader = uploader.clone();
         Box::pin(async move {
             match record.kind {
                 ReportKind::Chargeback => {
@@ -35,11 +56,12 @@ pub fn build_report_generator(accounting: Arc<dyn AccountingService>) -> Generat
                         .get_chargeback_report(record.start_date, record.end_date, None)
                         .await
                         .map_err(|e| format!("chargeback query failed: {e}"))?;
-                    // TODO(reports-s3): serialize + upload to object storage
-                    // and return the path in output_location.
+                    let row_count = u64::from(report.total_jobs);
+                    let output_location =
+                        maybe_upload_chargeback(&record, &report, uploader.as_deref()).await?;
                     Ok(GenerationOutcome {
-                        row_count: u64::from(report.total_jobs),
-                        output_location: None,
+                        row_count,
+                        output_location,
                     })
                 }
                 ReportKind::Utilization => Err(
@@ -56,6 +78,95 @@ pub fn build_report_generator(accounting: Arc<dyn AccountingService>) -> Generat
     })
 }
 
+/// Serialize a chargeback report to the record's requested format and
+/// upload it to object storage. Returns the `s3://bucket/key` URI on
+/// success. Returns `Ok(None)` when no uploader is configured — upload is
+/// optional.
+async fn maybe_upload_chargeback(
+    record: &ReportRecord,
+    report: &ChargebackReport,
+    uploader: Option<&ReportUploader>,
+) -> Result<Option<String>, String> {
+    let Some(uploader) = uploader else {
+        return Ok(None);
+    };
+
+    let (body, extension, content_type) = match record.format {
+        ReportFormat::Csv => (
+            serialize_chargeback_csv(report),
+            "csv",
+            "text/csv",
+        ),
+        ReportFormat::Json => (
+            serde_json::to_string(report)
+                .map_err(|e| format!("chargeback JSON serialization failed: {e}"))?,
+            "json",
+            "application/json",
+        ),
+    };
+    let key = format!("reports/{}.{}", record.id, extension);
+
+    uploader
+        .client
+        .put_object()
+        .bucket(&uploader.bucket)
+        .key(&key)
+        .body(ByteStream::from(body.into_bytes()))
+        .content_type(content_type)
+        .send()
+        .await
+        .map_err(|e| format!("S3 upload to s3://{}/{key} failed: {e}", uploader.bucket))?;
+
+    Ok(Some(format!("s3://{}/{key}", uploader.bucket)))
+}
+
+/// Serialize a [`ChargebackReport`] as a single-row CSV summary.
+///
+/// Intentionally compact — a richer per-job CSV requires per-line items
+/// which `ChargebackReport` does not carry today. The SPA renders this
+/// as a single summary download until per-job line items are added to
+/// the accounting path.
+fn serialize_chargeback_csv(report: &ChargebackReport) -> String {
+    let mut out = String::new();
+    out.push_str(
+        "report_id,cost_center_code,cost_center_name,period_start,period_end,\
+         total_jobs,total_impressions,color_impressions,total_cost_cents,\
+         base_cents,color_surcharge_cents,media_surcharge_cents,\
+         finishing_surcharge_cents,duplex_discount_cents\n",
+    );
+    let _ = writeln!(
+        out,
+        "{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+        report.report_id,
+        csv_escape(&report.cost_center.code),
+        csv_escape(&report.cost_center.name),
+        report.period.start,
+        report.period.end,
+        report.total_jobs,
+        report.total_impressions,
+        report.color_impressions,
+        report.total_cost_cents,
+        report.cost_breakdown.base_cents,
+        report.cost_breakdown.color_surcharge_cents,
+        report.cost_breakdown.media_surcharge_cents,
+        report.cost_breakdown.finishing_surcharge_cents,
+        report.cost_breakdown.duplex_discount_cents,
+    );
+    out
+}
+
+/// Quote a CSV field when it contains commas, quotes, or newlines.
+/// `cost_center.name` is the only field in practice that can carry a
+/// comma; the rest are numeric or well-formed codes.
+fn csv_escape(value: &str) -> String {
+    if value.contains(',') || value.contains('"') || value.contains('\n') {
+        let escaped = value.replace('"', "\"\"");
+        format!("\"{escaped}\"")
+    } else {
+        value.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,7 +174,7 @@ mod tests {
     use pf_accounting::AccountingError;
     use pf_common::identity::Edipi;
     use pf_common::job::CostCenter;
-    use pf_reports::{ReportFormat, ReportRecord, ReportState};
+    use pf_reports::{ReportRecord, ReportState};
     use std::future::Future;
     use std::pin::Pin;
     use uuid::Uuid;
@@ -101,8 +212,6 @@ mod tests {
                 let period = pf_accounting::BillingPeriod::new(from, to).unwrap();
                 let cc = CostCenter::new("ALL", "All Cost Centers").unwrap();
                 let builder = pf_accounting::ChargebackReportBuilder::new(cc, period).unwrap();
-                // Report the stub returns has 0 jobs; worker uses total_jobs
-                // as row_count.
                 Ok(builder.build())
             })
         }
@@ -159,17 +268,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chargeback_generator_delegates_to_accounting() {
-        let generator = build_report_generator(Arc::new(StubAccounting));
-        let outcome = generator(sample_record(ReportKind::Chargeback)).await.unwrap();
-        // Empty chargeback from the stub ⇒ row_count == 0.
+    async fn chargeback_without_uploader_returns_row_count_and_none_location() {
+        let generator = build_report_generator(Arc::new(StubAccounting), None);
+        let outcome = generator(sample_record(ReportKind::Chargeback))
+            .await
+            .unwrap();
         assert_eq!(outcome.row_count, 0);
         assert!(outcome.output_location.is_none());
     }
 
     #[tokio::test]
     async fn unimplemented_kinds_return_err() {
-        let generator = build_report_generator(Arc::new(StubAccounting));
+        let generator = build_report_generator(Arc::new(StubAccounting), None);
         for kind in [
             ReportKind::Utilization,
             ReportKind::QuotaCompliance,
@@ -178,5 +288,30 @@ mod tests {
             let result = generator(sample_record(kind)).await;
             assert!(result.is_err(), "kind {kind:?} should not be implemented");
         }
+    }
+
+    #[test]
+    fn csv_escape_quotes_comma_and_double_quote() {
+        assert_eq!(csv_escape("plain"), "plain");
+        assert_eq!(csv_escape("has, comma"), "\"has, comma\"");
+        assert_eq!(csv_escape("has \"quote\""), "\"has \"\"quote\"\"\"");
+        assert_eq!(csv_escape("has\nnewline"), "\"has\nnewline\"");
+    }
+
+    #[test]
+    fn serialize_chargeback_csv_has_header_and_row() {
+        let period = pf_accounting::BillingPeriod::new(
+            NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 3, 31).unwrap(),
+        )
+        .unwrap();
+        let cc = CostCenter::new("CC-001", "Test, Unit").unwrap();
+        let report = pf_accounting::ChargebackReportBuilder::new(cc, period)
+            .unwrap()
+            .build();
+        let csv = serialize_chargeback_csv(&report);
+        assert!(csv.starts_with("report_id,"));
+        // Cost center name gets CSV-quoted because of the comma.
+        assert!(csv.contains("\"Test, Unit\""));
     }
 }

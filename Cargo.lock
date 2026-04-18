@@ -2763,6 +2763,8 @@ name = "pf-api-gateway"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aws-config",
+ "aws-sdk-s3",
  "axum 0.8.8",
  "axum-extra",
  "base64 0.22.1",
@@ -2774,6 +2776,7 @@ dependencies = [
  "pf-audit",
  "pf-auth",
  "pf-common",
+ "pf-enroll-portal",
  "pf-fleet-mgr",
  "pf-job-queue",
  "pf-reports",
