@@ -2746,6 +2746,7 @@ dependencies = [
  "pf-common",
  "pf-fleet-mgr",
  "pf-job-queue",
+ "pf-reports",
  "pf-user-provisioning",
  "proptest",
  "serde",
@@ -2775,6 +2776,7 @@ dependencies = [
  "pf-common",
  "pf-fleet-mgr",
  "pf-job-queue",
+ "pf-reports",
  "pf-user-provisioning",
  "proptest",
  "ring",
@@ -2999,6 +3001,22 @@ dependencies = [
  "chrono",
  "pf-common",
  "proptest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "pf-reports"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "pf-common",
  "serde",
  "serde_json",
  "sqlx",

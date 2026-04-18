@@ -1,6 +1,6 @@
 [package]
-name = "pf-admin-ui"
-description = "Admin dashboard backend"
+name = "pf-reports"
+description = "Async report persistence and dispatch"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,13 +10,6 @@ publish.workspace = true
 
 [dependencies]
 pf-common = { path = "../pf-common" }
-pf-auth = { path = "../pf-auth" }
-pf-fleet-mgr = { path = "../pf-fleet-mgr" }
-pf-job-queue = { path = "../pf-job-queue" }
-pf-accounting = { path = "../pf-accounting" }
-pf-audit = { path = "../pf-audit" }
-pf-user-provisioning = { path = "../pf-user-provisioning" }
-pf-reports = { path = "../pf-reports" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -24,12 +17,10 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
-axum = { workspace = true }
-jsonwebtoken = { workspace = true }
+sqlx = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
-proptest = { workspace = true }
 
 [lints]
 workspace = true

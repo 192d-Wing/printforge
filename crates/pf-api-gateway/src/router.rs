@@ -66,6 +66,7 @@ fn build_admin_state(state: &AppState) -> AdminState {
         audit: state.audit_service.clone(),
         users: state.user_service.clone(),
         alerts: state.alert_service.clone(),
+        reports: state.report_service.clone(),
     }
 }
 
@@ -120,7 +121,8 @@ async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
         || state.fleet_service.is_some()
         || state.accounting_service.is_some()
         || state.audit_service.is_some()
-        || state.alert_service.is_some();
+        || state.alert_service.is_some()
+        || state.report_service.is_some();
 
     if has_any_backend {
         (StatusCode::OK, "ready")
@@ -150,6 +152,7 @@ mod tests {
             accounting_service: None,
             audit_service: None,
             alert_service: None,
+            report_service: None,
         }
     }
 

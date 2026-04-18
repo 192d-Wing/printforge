@@ -170,6 +170,7 @@ async fn live_app_state(dec: DecodingKey) -> AppState {
         accounting_service: None,
         audit_service: None,
         alert_service: None,
+        report_service: None,
     }
 }
 

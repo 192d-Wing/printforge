@@ -17,6 +17,7 @@ pf-fleet-mgr = { path = "../pf-fleet-mgr" }
 pf-accounting = { path = "../pf-accounting" }
 pf-audit = { path = "../pf-audit" }
 pf-user-provisioning = { path = "../pf-user-provisioning" }
+pf-reports = { path = "../pf-reports" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

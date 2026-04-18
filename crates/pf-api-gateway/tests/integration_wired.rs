@@ -149,6 +149,7 @@ fn wired_test_state_with_key(
         accounting_service: None,
         audit_service: None,
         alert_service: None,
+        report_service: None,
     }
 }
 

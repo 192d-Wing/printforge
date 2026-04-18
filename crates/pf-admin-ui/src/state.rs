@@ -56,6 +56,9 @@ pub struct AdminState {
 
     /// Fleet alert service — list + acknowledge.
     pub alerts: Option<Arc<dyn pf_fleet_mgr::AlertService>>,
+
+    /// Report service — enqueue + fetch.
+    pub reports: Option<Arc<dyn pf_reports::ReportService>>,
 }
 
 impl HasJwtConfig for AdminState {
@@ -84,6 +87,7 @@ impl std::fmt::Debug for AdminState {
             .field("audit", &self.audit.is_some())
             .field("users", &self.users.is_some())
             .field("alerts", &self.alerts.is_some())
+            .field("reports", &self.reports.is_some())
             .finish()
     }
 }
@@ -105,6 +109,7 @@ impl AdminState {
             audit: None,
             users: None,
             alerts: None,
+            reports: None,
         }
     }
 }

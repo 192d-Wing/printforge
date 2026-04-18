@@ -20,6 +20,7 @@ members = [
     "crates/pf-cache-node",
     "crates/pf-driver-service",
     "crates/pf-user-provisioning",
+    "crates/pf-reports",
 ]
 
 [workspace.package]
