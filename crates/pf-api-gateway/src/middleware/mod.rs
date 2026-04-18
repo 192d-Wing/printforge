@@ -7,5 +7,6 @@
 
 pub mod audit;
 pub mod auth;
+pub mod layers;
 pub mod rate_limit;
 pub mod request_id;
