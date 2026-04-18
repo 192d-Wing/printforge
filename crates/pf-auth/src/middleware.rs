@@ -5,16 +5,17 @@
 //!
 //! **NIST 800-53 Rev 5:** AC-3 — Access Enforcement, IA-2 — Identification and Authentication
 //!
-//! Provides `RequireAuth` and `RequireRole` extractors for use in Axum
-//! route handlers. These extractors validate the JWT bearer token and
-//! check role-based access control.
+//! Provides `RequireAuth` and `RequireRole` extractors. `RequireAuth` validates
+//! a JWT bearer token from the `Authorization` header and extracts the caller's
+//! [`Identity`]. To use it in a handler, your Axum state must implement
+//! [`HasJwtConfig`].
 
 use axum::extract::FromRequestParts;
 use axum::http::StatusCode;
 use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
-use pf_common::identity::Role;
-use serde::{Deserialize, Serialize};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
+use pf_common::identity::{Edipi, Identity, Role, SiteId};
 
 use crate::jwt::PrintForgeClaims;
 
@@ -43,78 +44,132 @@ impl IntoResponse for AuthRejection {
     }
 }
 
+/// Trait implemented by Axum state types that carry the JWT verification
+/// configuration needed by [`RequireAuth`].
+///
+/// **NIST 800-53 Rev 5:** IA-5 — Authenticator Management
+pub trait HasJwtConfig {
+    /// Ed25519 public key used to verify JWT signatures. `None` means no key
+    /// is configured and every request will be rejected.
+    fn jwt_decoding_key(&self) -> Option<&DecodingKey>;
+
+    /// Expected `iss` claim.
+    fn jwt_issuer(&self) -> &str;
+
+    /// Expected `aud` claim.
+    fn jwt_audience(&self) -> &str;
+}
+
 /// Authenticated user identity extracted from a valid JWT bearer token.
 ///
 /// **NIST 800-53 Rev 5:** IA-2 — Identification and Authentication
-///
-/// Use this as an Axum extractor in route handlers:
-///
-/// ```ignore
-/// async fn my_handler(auth: RequireAuth) -> impl IntoResponse {
-///     let edipi = &auth.claims.sub;
-///     // ...
-/// }
-/// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RequireAuth {
-    /// The validated JWT claims.
-    pub claims: PrintForgeClaims,
-}
+#[derive(Debug, Clone)]
+pub struct RequireAuth(pub Identity);
 
 impl<S> FromRequestParts<S> for RequireAuth
 where
-    S: Send + Sync,
+    S: HasJwtConfig + Send + Sync,
 {
     type Rejection = AuthRejection;
 
-    /// Extract and validate the JWT bearer token from the `Authorization` header.
-    ///
-    /// The actual JWT validation requires access to the `JwtKeyPair` and `JwtConfig`,
-    /// which in production are provided via Axum state. This implementation extracts
-    /// the token string; full validation is wired up in the application layer.
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        // Extract the Authorization header.
-        let auth_header = parts
-            .headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .ok_or(AuthRejection::MissingToken)?;
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let token = extract_bearer_token(parts).ok_or(AuthRejection::MissingToken)?;
 
-        // Must be a Bearer token.
-        let token = auth_header
-            .strip_prefix("Bearer ")
-            .ok_or(AuthRejection::MissingToken)?;
+        let decoding_key = state.jwt_decoding_key().ok_or_else(|| {
+            tracing::error!("JWT decoding key not configured");
+            AuthRejection::InvalidToken
+        })?;
 
-        if token.is_empty() {
-            return Err(AuthRejection::MissingToken);
-        }
+        let identity = validate_and_extract(
+            token,
+            decoding_key,
+            state.jwt_issuer(),
+            state.jwt_audience(),
+        )?;
 
-        // In a full implementation, this would:
-        // 1. Retrieve JwtKeyPair and JwtConfig from Axum state
-        // 2. Call jwt::validate_token(config, key_pair, token)
-        // 3. Return the claims
-        //
-        // For now, we decode without verification to establish the type structure.
-        // The actual wiring happens in pf-api-gateway.
-        let _ = token;
-        Err(AuthRejection::InvalidToken)
+        Ok(Self(identity))
     }
+}
+
+fn extract_bearer_token(parts: &Parts) -> Option<&str> {
+    let value = parts
+        .headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?;
+
+    let token = value
+        .strip_prefix("Bearer ")
+        .or_else(|| value.strip_prefix("bearer "))?;
+    if token.is_empty() {
+        return None;
+    }
+    Some(token)
+}
+
+fn parse_role_str(s: &str) -> Option<Role> {
+    match s {
+        "User" => Some(Role::User),
+        "FleetAdmin" => Some(Role::FleetAdmin),
+        "Auditor" => Some(Role::Auditor),
+        other if other.starts_with("SiteAdmin:") => {
+            let site = other.strip_prefix("SiteAdmin:")?;
+            Some(Role::SiteAdmin(SiteId(site.to_string())))
+        }
+        _ => None,
+    }
+}
+
+/// Validate a JWT and extract the identity.
+///
+/// **NIST 800-53 Rev 5:** IA-2, IA-5
+fn validate_and_extract(
+    token: &str,
+    decoding_key: &DecodingKey,
+    issuer: &str,
+    audience: &str,
+) -> Result<Identity, AuthRejection> {
+    let mut validation = Validation::new(Algorithm::EdDSA);
+    validation.set_issuer(&[issuer]);
+    validation.set_audience(&[audience]);
+    validation.validate_exp = true;
+    validation.validate_nbf = true;
+
+    let token_data = decode::<PrintForgeClaims>(token, decoding_key, &validation).map_err(|e| {
+        tracing::warn!(error = %e, "JWT validation failed");
+        AuthRejection::InvalidToken
+    })?;
+
+    let claims = token_data.claims;
+
+    let edipi = Edipi::new(&claims.sub).map_err(|_| {
+        tracing::warn!("JWT sub claim is not a valid EDIPI");
+        AuthRejection::InvalidToken
+    })?;
+
+    let roles: Vec<Role> = claims.roles.iter().filter_map(|s| parse_role_str(s)).collect();
+
+    if roles.is_empty() {
+        tracing::warn!("JWT contains no valid roles");
+        return Err(AuthRejection::InvalidToken);
+    }
+
+    Ok(Identity {
+        edipi,
+        name: String::new(),
+        org: String::new(),
+        roles,
+    })
 }
 
 /// Role-based access control check.
 ///
 /// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
-///
-/// Verifies that the authenticated user holds at least one of the
-/// required roles.
 #[derive(Debug, Clone)]
-pub struct RequireRole {
-    /// The authenticated user's claims (extracted from `RequireAuth`).
-    pub claims: PrintForgeClaims,
-}
+pub struct RequireRole;
 
 impl RequireRole {
-    /// Check whether the user's claims include at least one of the given roles.
+    /// Check whether the given claims include at least one of the required roles.
     ///
     /// # Errors
     ///
@@ -143,30 +198,13 @@ pub fn role_to_string(role: &Role) -> String {
 }
 
 /// Parse a role string back into a `Role` enum.
-///
-/// # Errors
-///
-/// Returns `None` if the string does not match any known role format.
 #[must_use]
 pub fn role_from_string(s: &str) -> Option<Role> {
-    match s {
-        "User" => Some(Role::User),
-        "FleetAdmin" => Some(Role::FleetAdmin),
-        "Auditor" => Some(Role::Auditor),
-        other if other.starts_with("SiteAdmin:") => {
-            let site_id = other.strip_prefix("SiteAdmin:")?;
-            Some(Role::SiteAdmin(pf_common::identity::SiteId(
-                site_id.to_string(),
-            )))
-        }
-        _ => None,
-    }
+    parse_role_str(s)
 }
 
 #[cfg(test)]
 mod tests {
-    use pf_common::identity::SiteId;
-
     use super::*;
     use crate::jwt::TokenScope;
 
@@ -187,8 +225,6 @@ mod tests {
 
     #[test]
     fn nist_ac3_check_roles_allows_matching_role() {
-        // NIST 800-53 Rev 5: AC-3 — Access Enforcement
-        // Evidence: User with FleetAdmin role passes FleetAdmin check.
         let claims = test_claims(vec!["FleetAdmin".to_string()]);
         let result = RequireRole::check_roles(&claims, &[Role::FleetAdmin]);
         assert!(result.is_ok());
@@ -196,8 +232,6 @@ mod tests {
 
     #[test]
     fn nist_ac3_check_roles_rejects_missing_role() {
-        // NIST 800-53 Rev 5: AC-3 — Access Enforcement
-        // Evidence: User with only User role is denied FleetAdmin access.
         let claims = test_claims(vec!["User".to_string()]);
         let result = RequireRole::check_roles(&claims, &[Role::FleetAdmin]);
         assert!(matches!(result, Err(AuthRejection::InsufficientRole)));
@@ -233,7 +267,6 @@ mod tests {
 
     #[test]
     fn auth_rejection_responses() {
-        // Verify that rejections produce correct status codes.
         let resp = AuthRejection::MissingToken.into_response();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
@@ -242,5 +275,49 @@ mod tests {
 
         let resp = AuthRejection::InsufficientRole.into_response();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn parse_role_handles_all_variants() {
+        assert_eq!(parse_role_str("User"), Some(Role::User));
+        assert_eq!(parse_role_str("FleetAdmin"), Some(Role::FleetAdmin));
+        assert_eq!(parse_role_str("Auditor"), Some(Role::Auditor));
+        assert_eq!(
+            parse_role_str("SiteAdmin:SITE-001"),
+            Some(Role::SiteAdmin(SiteId("SITE-001".to_string())))
+        );
+        assert_eq!(parse_role_str("Invalid"), None);
+    }
+
+    #[test]
+    fn extract_bearer_token_rejects_missing_header() {
+        let parts = axum::http::Request::builder()
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+        assert!(extract_bearer_token(&parts).is_none());
+    }
+
+    #[test]
+    fn extract_bearer_token_rejects_empty_token() {
+        let parts = axum::http::Request::builder()
+            .header("Authorization", "Bearer ")
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+        assert!(extract_bearer_token(&parts).is_none());
+    }
+
+    #[test]
+    fn extract_bearer_token_extracts_valid_token() {
+        let parts = axum::http::Request::builder()
+            .header("Authorization", "Bearer eyJ0eXAiOi.test.token")
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+        assert_eq!(extract_bearer_token(&parts), Some("eyJ0eXAiOi.test.token"));
     }
 }

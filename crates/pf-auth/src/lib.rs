@@ -33,7 +33,7 @@ pub use certificate::{ParsedCertificate, extract_edipi_from_cn, validate_chain};
 pub use config::AuthConfig;
 pub use error::AuthError;
 pub use jwt::{PrintForgeClaims, TokenScope};
-pub use middleware::{RequireAuth, RequireRole};
+pub use middleware::{AuthRejection, HasJwtConfig, RequireAuth, RequireRole};
 pub use ocsp::{OcspCache, OcspStatus};
 pub use pin::{PinState, PinTracker};
 pub use trust_store::TrustStore;

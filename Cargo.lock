@@ -2763,6 +2763,7 @@ dependencies = [
  "jsonwebtoken",
  "pf-accounting",
  "pf-audit",
+ "pf-auth",
  "pf-common",
  "pf-fleet-mgr",
  "pf-job-queue",
