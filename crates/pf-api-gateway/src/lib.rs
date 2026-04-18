@@ -12,6 +12,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod background;
 pub mod config;
 pub mod error;
 pub mod middleware;
@@ -21,6 +22,6 @@ pub mod server;
 pub mod validation;
 
 // Re-exports for convenience.
-pub use config::GatewayConfig;
+pub use config::{BackgroundConfig, GatewayConfig};
 pub use error::ApiError;
 pub use server::{AppState, run};

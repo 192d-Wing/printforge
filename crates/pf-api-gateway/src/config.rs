@@ -57,6 +57,46 @@ pub struct GatewayConfig {
     pub max_upload_size: usize,
     /// Graceful shutdown timeout in seconds.
     pub shutdown_timeout_secs: u64,
+    /// Background job configuration (retention sweeps, report worker).
+    pub background: BackgroundConfig,
+}
+
+/// Configuration for background cron-like tasks spawned at server startup.
+///
+/// Tasks are only spawned when the corresponding service handle is wired
+/// into [`AppState`](crate::AppState); e.g., the alert retention sweep only
+/// runs if [`AppState::alert_service`] is `Some`.
+///
+/// **NIST 800-53 Rev 5:** AU-11 — Audit Record Retention
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackgroundConfig {
+    /// Whether background tasks run at all. Set to `false` for short-lived
+    /// one-shot deployments (migrations, smoke tests).
+    pub enabled: bool,
+    /// How often the alert retention sweep runs, in seconds.
+    pub alert_sweep_interval_secs: u64,
+    /// How long Resolved alerts are retained, in days. Alerts older than
+    /// this are deleted by the retention sweep. Active and Acknowledged
+    /// alerts are never swept.
+    pub alert_retention_days: i64,
+    /// How often the report worker polls for Pending rows, in seconds.
+    pub report_poll_interval_secs: u64,
+}
+
+impl Default for BackgroundConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            // 1 hour: sweeps rarely vs. alert churn. Can tighten in prod.
+            alert_sweep_interval_secs: 3600,
+            // 30 days: long enough for post-incident review, short enough
+            // to keep the table compact.
+            alert_retention_days: 30,
+            // 5 seconds: low latency from enqueue to worker pickup without
+            // hammering the DB.
+            report_poll_interval_secs: 5,
+        }
+    }
 }
 
 impl Default for GatewayConfig {
@@ -70,6 +110,7 @@ impl Default for GatewayConfig {
             max_body_size: 1_048_576,    // 1 MiB
             max_upload_size: 52_428_800, // 50 MiB
             shutdown_timeout_secs: 30,
+            background: BackgroundConfig::default(),
         }
     }
 }
@@ -183,6 +224,30 @@ impl GatewayConfig {
         if let Ok(v) = std::env::var("PF_GW_SHUTDOWN_TIMEOUT") {
             cfg.shutdown_timeout_secs = v.parse().map_err(|e| {
                 anyhow::anyhow!("invalid PF_GW_SHUTDOWN_TIMEOUT '{v}': {e}")
+            })?;
+        }
+
+        if let Ok(v) = std::env::var("PF_GW_BACKGROUND_ENABLED") {
+            cfg.background.enabled = v.parse().map_err(|e| {
+                anyhow::anyhow!("invalid PF_GW_BACKGROUND_ENABLED '{v}': {e}")
+            })?;
+        }
+
+        if let Ok(v) = std::env::var("PF_GW_ALERT_SWEEP_INTERVAL") {
+            cfg.background.alert_sweep_interval_secs = v.parse().map_err(|e| {
+                anyhow::anyhow!("invalid PF_GW_ALERT_SWEEP_INTERVAL '{v}': {e}")
+            })?;
+        }
+
+        if let Ok(v) = std::env::var("PF_GW_ALERT_RETENTION_DAYS") {
+            cfg.background.alert_retention_days = v.parse().map_err(|e| {
+                anyhow::anyhow!("invalid PF_GW_ALERT_RETENTION_DAYS '{v}': {e}")
+            })?;
+        }
+
+        if let Ok(v) = std::env::var("PF_GW_REPORT_POLL_INTERVAL") {
+            cfg.background.report_poll_interval_secs = v.parse().map_err(|e| {
+                anyhow::anyhow!("invalid PF_GW_REPORT_POLL_INTERVAL '{v}': {e}")
             })?;
         }
 

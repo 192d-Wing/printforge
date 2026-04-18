@@ -11,8 +11,10 @@ use std::time::Duration;
 
 use jsonwebtoken::DecodingKey;
 use tokio::signal;
+use tokio::sync::watch;
 use tracing::{info, warn};
 
+use crate::background;
 use crate::config::GatewayConfig;
 use crate::router::build_router;
 
@@ -120,6 +122,19 @@ pub async fn run(config: GatewayConfig) -> Result<(), Box<dyn std::error::Error 
         report_service: None,
     };
 
+    // Spawn background tasks before the server so they're ready to accept
+    // shutdown notifications alongside the Axum listener. Tasks that need a
+    // service handle are no-ops when the handle is None.
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let mut background_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    if let Some(alerts) = state.alert_service.clone() {
+        if let Some(handle) =
+            background::spawn_alert_retention(alerts, &state.config.background, shutdown_rx.clone())
+        {
+            background_handles.push(handle);
+        }
+    }
+
     let app = build_router(state);
 
     info!(%listen_addr, "starting API gateway");
@@ -129,6 +144,14 @@ pub async fn run(config: GatewayConfig) -> Result<(), Box<dyn std::error::Error 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(shutdown_timeout))
         .await?;
+
+    // Fan out shutdown to background tasks and await their tick completion.
+    let _ = shutdown_tx.send(true);
+    for handle in background_handles {
+        if let Err(e) = handle.await {
+            warn!(error = %e, "background task did not shut down cleanly");
+        }
+    }
 
     info!("API gateway shut down cleanly");
     Ok(())
