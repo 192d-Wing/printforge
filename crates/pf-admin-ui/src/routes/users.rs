@@ -9,8 +9,12 @@ use axum::extract::{Path, State};
 use axum::routing::{get, patch};
 use axum::{Json, Router};
 
+use std::collections::HashMap;
+
+use pf_accounting::QuotaStatusResponse;
 use pf_auth::middleware::RequireAuth;
 use pf_common::identity::{Edipi, SiteId};
+use pf_common::policy::QuotaStatus;
 use pf_user_provisioning::{ProvisionedUser, UserFilter, UserStatus};
 
 use crate::error::AdminUiError;
@@ -64,7 +68,26 @@ async fn list_users(
             source: Box::new(e),
         })?;
 
-    let users = page.into_iter().map(to_user_summary).collect();
+    // Batched quota enrichment: one round-trip for the whole page, best
+    // effort. Missing handle or failure -> blank quotas rather than 503,
+    // since the listing is still useful without them.
+    let quotas = match state.accounting.as_ref() {
+        Some(svc) => {
+            let edipis: Vec<Edipi> = page.iter().map(|u| u.edipi.clone()).collect();
+            svc.get_quota_status_bulk(edipis)
+                .await
+                .unwrap_or_else(|err| {
+                    tracing::warn!(error = %err, "quota lookup failed; rendering blank quotas");
+                    HashMap::new()
+                })
+        }
+        None => HashMap::new(),
+    };
+
+    let users = page
+        .into_iter()
+        .map(|u| to_user_summary(u, &quotas))
+        .collect();
 
     Ok(Json(UserListResponse {
         users,
@@ -123,7 +146,10 @@ async fn update_roles(
         .update_roles(&edipi, request.roles)
         .map_err(map_user_error)?;
 
-    Ok(Json(to_user_summary(updated)))
+    // Update responses render without a quota (single-user fetch path); the
+    // SPA can refresh the listing or call a per-user quota endpoint if it
+    // needs the freshest number.
+    Ok(Json(to_user_summary(updated, &HashMap::new())))
 }
 
 /// Map a [`pf_user_provisioning::ProvisioningError`] onto the admin-ui error type.
@@ -139,12 +165,14 @@ fn map_user_error(err: pf_user_provisioning::ProvisioningError) -> AdminUiError 
     }
 }
 
-/// Map a [`ProvisionedUser`] onto the admin-ui wire type.
-///
-/// Quota is left `None` for now — the admin-ui list endpoint pre-dates a
-/// batched quota lookup; users who need current quota should hit the
-/// per-user detail endpoint (or wait for the batched slice).
-fn to_user_summary(user: ProvisionedUser) -> UserSummary {
+/// Map a [`ProvisionedUser`] onto the admin-ui wire type, attaching quota
+/// from the batched lookup if present. A user without a quota counter row
+/// renders as `quota: None` — missing-row is not an error.
+fn to_user_summary(
+    user: ProvisionedUser,
+    quotas: &HashMap<Edipi, QuotaStatusResponse>,
+) -> UserSummary {
+    let quota = quotas.get(&user.edipi).map(to_quota_status);
     UserSummary {
         user_id: user.edipi.as_str().to_string(),
         display_name: user.display_name,
@@ -152,9 +180,23 @@ fn to_user_summary(user: ProvisionedUser) -> UserSummary {
         site_id: SiteId(user.site_id),
         roles: user.roles,
         active: user.status == UserStatus::Active,
-        quota: None,
+        quota,
         last_login: user.last_login_at,
         provisioned_at: user.created_at,
+    }
+}
+
+/// Map a [`QuotaStatusResponse`] onto the pf-common [`QuotaStatus`] wire type.
+///
+/// Burst / remaining / period fields are dropped here because
+/// [`QuotaStatus`] is intentionally narrow for listing views. A dedicated
+/// per-user quota endpoint can surface the richer response.
+fn to_quota_status(q: &QuotaStatusResponse) -> QuotaStatus {
+    QuotaStatus {
+        limit: q.page_limit,
+        used: q.pages_used,
+        color_limit: q.color_page_limit,
+        color_used: q.color_pages_used,
     }
 }
 
@@ -190,7 +232,10 @@ mod tests {
 
     #[test]
     fn to_user_summary_wraps_site_id() {
-        let mapped = to_user_summary(sample_provisioned("1111111111", "langley", true));
+        let mapped = to_user_summary(
+            sample_provisioned("1111111111", "langley", true),
+            &HashMap::new(),
+        );
         assert_eq!(mapped.site_id, SiteId("langley".to_string()));
         assert_eq!(mapped.user_id, "1111111111");
         assert!(mapped.active);
@@ -199,8 +244,52 @@ mod tests {
 
     #[test]
     fn to_user_summary_suspended_user_reports_inactive() {
-        let mapped = to_user_summary(sample_provisioned("1111111111", "langley", false));
+        let mapped = to_user_summary(
+            sample_provisioned("1111111111", "langley", false),
+            &HashMap::new(),
+        );
         assert!(!mapped.active);
+    }
+
+    #[test]
+    fn to_user_summary_attaches_quota_when_present() {
+        use chrono::Utc;
+        let edipi = Edipi::new("1111111111").unwrap();
+        let mut quotas = HashMap::new();
+        quotas.insert(
+            edipi.clone(),
+            QuotaStatusResponse {
+                edipi: edipi.clone(),
+                page_limit: 500,
+                pages_used: 120,
+                pages_remaining: 380,
+                color_page_limit: 100,
+                color_pages_used: 30,
+                color_pages_remaining: 70,
+                burst_pages_used: 0,
+                burst_limit: 50,
+                burst_pages_remaining: 50,
+                period_start: Utc::now(),
+                period_end: Utc::now(),
+            },
+        );
+
+        let mapped = to_user_summary(sample_provisioned("1111111111", "langley", true), &quotas);
+        let quota = mapped.quota.expect("expected quota to be attached");
+        assert_eq!(quota.limit, 500);
+        assert_eq!(quota.used, 120);
+        assert_eq!(quota.color_limit, 100);
+        assert_eq!(quota.color_used, 30);
+    }
+
+    #[test]
+    fn to_user_summary_missing_quota_renders_none() {
+        // A user with no counter row is not an error — just render blank.
+        let mapped = to_user_summary(
+            sample_provisioned("9999999999", "langley", true),
+            &HashMap::new(),
+        );
+        assert!(mapped.quota.is_none());
     }
 
     #[test]

@@ -314,6 +314,35 @@ impl AccountingRepository for PgAccountingRepository {
         row.try_into_counter()
     }
 
+    async fn get_quota_counters_bulk(
+        &self,
+        edipis: &[Edipi],
+    ) -> Result<std::collections::HashMap<Edipi, QuotaCounter>, AccountingError> {
+        if edipis.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        let edipi_strs: Vec<String> =
+            edipis.iter().map(|e| e.as_str().to_string()).collect();
+
+        let rows = sqlx::query_as::<_, QuotaCounterRow>(
+            "SELECT edipi, page_limit, pages_used, color_page_limit, color_pages_used, \
+             period_start, period_end, burst_pages_used, burst_limit \
+             FROM quota_counters WHERE edipi = ANY($1)",
+        )
+        .bind(&edipi_strs)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AccountingError::Database)?;
+
+        let mut out = std::collections::HashMap::with_capacity(rows.len());
+        for row in rows {
+            let counter = row.try_into_counter()?;
+            out.insert(counter.edipi.clone(), counter);
+        }
+        Ok(out)
+    }
+
     async fn save_quota_counter(&self, counter: &QuotaCounter) -> Result<(), AccountingError> {
         sqlx::query(
             "INSERT INTO quota_counters (edipi, page_limit, pages_used, color_page_limit, \

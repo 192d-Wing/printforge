@@ -155,6 +155,52 @@ where
             self.repo.monthly_totals(&installations, start, end).await
         })
     }
+
+    fn get_quota_status_bulk(
+        &self,
+        edipis: Vec<Edipi>,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        std::collections::HashMap<Edipi, QuotaStatusResponse>,
+                        AccountingError,
+                    >,
+                > + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async move {
+            let counters = self.repo.get_quota_counters_bulk(&edipis).await?;
+            let mut out = std::collections::HashMap::with_capacity(counters.len());
+            for (edipi, counter) in counters {
+                out.insert(
+                    edipi,
+                    QuotaStatusResponse {
+                        edipi: counter.edipi.clone(),
+                        page_limit: counter.page_limit,
+                        pages_used: counter.pages_used,
+                        pages_remaining: counter
+                            .page_limit
+                            .saturating_sub(counter.pages_used),
+                        color_page_limit: counter.color_page_limit,
+                        color_pages_used: counter.color_pages_used,
+                        color_pages_remaining: counter
+                            .color_page_limit
+                            .saturating_sub(counter.color_pages_used),
+                        burst_pages_used: counter.burst_pages_used,
+                        burst_limit: counter.burst_limit,
+                        burst_pages_remaining: counter
+                            .burst_limit
+                            .saturating_sub(counter.burst_pages_used),
+                        period_start: counter.period_start,
+                        period_end: counter.period_end,
+                    },
+                );
+            }
+            Ok(out)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -235,6 +281,19 @@ mod tests {
                 .find(|qc| qc.edipi == *edipi)
                 .cloned()
                 .ok_or_else(|| AccountingError::Database(sqlx::Error::RowNotFound))
+        }
+
+        async fn get_quota_counters_bulk(
+            &self,
+            edipis: &[Edipi],
+        ) -> Result<std::collections::HashMap<Edipi, QuotaCounter>, AccountingError> {
+            let mut out = std::collections::HashMap::new();
+            for edipi in edipis {
+                if let Some(qc) = self.quota_counters.iter().find(|qc| qc.edipi == *edipi) {
+                    out.insert(edipi.clone(), qc.clone());
+                }
+            }
+            Ok(out)
         }
 
         async fn save_quota_counter(

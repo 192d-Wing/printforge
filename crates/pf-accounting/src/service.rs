@@ -57,6 +57,7 @@ pub struct QuotaStatusResponse {
 ///
 /// Implementations orchestrate repository calls and business logic for
 /// quota status queries and chargeback report generation.
+#[allow(clippy::type_complexity)]
 pub trait AccountingService: Send + Sync {
     /// Retrieve the current quota status for a user identified by EDIPI.
     ///
@@ -93,6 +94,29 @@ pub trait AccountingService: Send + Sync {
         to: NaiveDate,
         cost_center_filter: Option<CostCenter>,
     ) -> Pin<Box<dyn Future<Output = Result<ChargebackReport, AccountingError>> + Send + '_>>;
+
+    /// Look up quota status for many users in a single round-trip.
+    ///
+    /// Used by the admin users listing to avoid N+1 queries. Users without a
+    /// quota counter are simply absent from the returned map.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AccountingError::Database`] on persistence failure.
+    fn get_quota_status_bulk(
+        &self,
+        edipis: Vec<Edipi>,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        std::collections::HashMap<Edipi, QuotaStatusResponse>,
+                        AccountingError,
+                    >,
+                > + Send
+                + '_,
+        >,
+    >;
 
     /// Return aggregate print totals (impressions + `cost_cents`) for the
     /// given date range, optionally scoped to a set of installations via

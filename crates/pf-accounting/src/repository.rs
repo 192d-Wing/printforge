@@ -76,6 +76,22 @@ pub trait AccountingRepository: Send + Sync {
         edipi: &Edipi,
     ) -> impl Future<Output = Result<QuotaCounter, AccountingError>> + Send;
 
+    /// Retrieve quota counters for a batch of users in a single round-trip.
+    ///
+    /// Users with no counter row are simply absent from the returned map
+    /// — the caller decides how to render "no quota set". No row-level
+    /// locking; this is a read path, unlike [`Self::get_quota_counter`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AccountingError::Database`] on persistence failure.
+    fn get_quota_counters_bulk(
+        &self,
+        edipis: &[Edipi],
+    ) -> impl Future<
+        Output = Result<std::collections::HashMap<Edipi, QuotaCounter>, AccountingError>,
+    > + Send;
+
     /// Persist an updated quota counter.
     ///
     /// # Errors
