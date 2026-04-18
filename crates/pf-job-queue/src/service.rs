@@ -16,6 +16,31 @@ use pf_common::job::{JobId, JobMetadata, JobStatus};
 
 use crate::error::JobQueueError;
 
+/// Counts of jobs grouped by [`JobStatus`], scoped by the owner's installation.
+///
+/// Returned by [`JobRepository::count_by_status`](crate::repository::JobRepository::count_by_status)
+/// and [`JobService::count_by_status`] for the admin dashboard KPI widget.
+/// Fields correspond 1:1 to the variants of [`JobStatus`].
+///
+/// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct JobStatusCounts {
+    /// Jobs currently held awaiting release (Follow-Me).
+    pub held: u64,
+    /// Jobs waiting for a printer to become available.
+    pub waiting: u64,
+    /// Jobs in the process of being released to a printer.
+    pub releasing: u64,
+    /// Jobs actively printing.
+    pub printing: u64,
+    /// Jobs that completed successfully.
+    pub completed: u64,
+    /// Jobs that failed.
+    pub failed: u64,
+    /// Jobs that were purged (retention or cancellation).
+    pub purged: u64,
+}
+
 /// A job row enriched with owner attributes for the admin dashboard listing.
 ///
 /// Returned by [`JobService::list_jobs_admin`]. The repository layer joins
@@ -178,4 +203,17 @@ pub trait JobService: Send + Sync {
         limit: u32,
         offset: u32,
     ) -> Pin<Box<dyn Future<Output = Result<(Vec<AdminJobSummary>, u64), JobQueueError>> + Send + '_>>;
+
+    /// Count jobs in each lifecycle state, optionally scoped to a set of
+    /// installations via the owner's `users.site_id`.
+    ///
+    /// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+    ///
+    /// # Errors
+    ///
+    /// Returns `JobQueueError::Repository` on persistence failure.
+    fn count_by_status(
+        &self,
+        installations: Vec<String>,
+    ) -> Pin<Box<dyn Future<Output = Result<JobStatusCounts, JobQueueError>> + Send + '_>>;
 }

@@ -18,7 +18,7 @@ use sqlx::PgPool;
 use crate::error::JobQueueError;
 use crate::repository::JobRepository;
 use crate::retention::RetentionQuery;
-use crate::service::AdminJobSummary;
+use crate::service::{AdminJobSummary, JobStatusCounts};
 
 /// `PostgreSQL`-backed job metadata repository.
 pub struct PgJobRepository {
@@ -388,6 +388,54 @@ impl JobRepository for PgJobRepository {
 
         Ok((summaries, u64::try_from(total).unwrap_or(0)))
     }
+
+    async fn count_by_status(
+        &self,
+        installations: &[String],
+    ) -> Result<JobStatusCounts, JobQueueError> {
+        let row = if installations.is_empty() {
+            sqlx::query_as::<_, StatusCountsRow>(
+                "SELECT \
+                 COUNT(*) FILTER (WHERE status = 'Held')::bigint AS held, \
+                 COUNT(*) FILTER (WHERE status = 'Waiting')::bigint AS waiting, \
+                 COUNT(*) FILTER (WHERE status = 'Releasing')::bigint AS releasing, \
+                 COUNT(*) FILTER (WHERE status = 'Printing')::bigint AS printing, \
+                 COUNT(*) FILTER (WHERE status = 'Completed')::bigint AS completed, \
+                 COUNT(*) FILTER (WHERE status = 'Failed')::bigint AS failed, \
+                 COUNT(*) FILTER (WHERE status = 'Purged')::bigint AS purged \
+                 FROM jobs",
+            )
+            .fetch_one(&self.pool)
+            .await
+        } else {
+            sqlx::query_as::<_, StatusCountsRow>(
+                "SELECT \
+                 COUNT(*) FILTER (WHERE j.status = 'Held')::bigint AS held, \
+                 COUNT(*) FILTER (WHERE j.status = 'Waiting')::bigint AS waiting, \
+                 COUNT(*) FILTER (WHERE j.status = 'Releasing')::bigint AS releasing, \
+                 COUNT(*) FILTER (WHERE j.status = 'Printing')::bigint AS printing, \
+                 COUNT(*) FILTER (WHERE j.status = 'Completed')::bigint AS completed, \
+                 COUNT(*) FILTER (WHERE j.status = 'Failed')::bigint AS failed, \
+                 COUNT(*) FILTER (WHERE j.status = 'Purged')::bigint AS purged \
+                 FROM jobs j JOIN users u ON j.owner_edipi = u.edipi \
+                 WHERE u.site_id = ANY($1)",
+            )
+            .bind(installations.to_vec())
+            .fetch_one(&self.pool)
+            .await
+        }
+        .map_err(|e| JobQueueError::Repository(Box::new(e)))?;
+
+        Ok(JobStatusCounts {
+            held: u64::try_from(row.held).unwrap_or(0),
+            waiting: u64::try_from(row.waiting).unwrap_or(0),
+            releasing: u64::try_from(row.releasing).unwrap_or(0),
+            printing: u64::try_from(row.printing).unwrap_or(0),
+            completed: u64::try_from(row.completed).unwrap_or(0),
+            failed: u64::try_from(row.failed).unwrap_or(0),
+            purged: u64::try_from(row.purged).unwrap_or(0),
+        })
+    }
 }
 
 /// Internal row type for [`list_admin_scoped`]. Carries everything the
@@ -410,6 +458,18 @@ struct AdminJobRow {
     completed_at: Option<chrono::DateTime<chrono::Utc>>,
     owner_display_name: String,
     owner_site_id: String,
+}
+
+/// Internal row type for [`count_by_status`](PgJobRepository::count_by_status).
+#[derive(sqlx::FromRow)]
+struct StatusCountsRow {
+    held: i64,
+    waiting: i64,
+    releasing: i64,
+    printing: i64,
+    completed: i64,
+    failed: i64,
+    purged: i64,
 }
 
 impl AdminJobRow {

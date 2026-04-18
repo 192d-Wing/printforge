@@ -16,7 +16,7 @@ use chrono::NaiveDate;
 use pf_common::identity::Edipi;
 use pf_common::job::{CostCenter, JobId};
 
-use crate::chargeback::ChargebackReport;
+use crate::chargeback::{ChargebackReport, MonthlyTotals};
 use crate::cost_center::UserCostProfile;
 use crate::cost_model::JobCost;
 use crate::error::AccountingError;
@@ -151,4 +151,20 @@ pub trait AccountingRepository: Send + Sync {
         &self,
         cost_center: &CostCenter,
     ) -> impl Future<Output = Result<Vec<ChargebackReport>, AccountingError>> + Send;
+
+    /// Sum impressions and cost cents over a date range, optionally scoped to
+    /// a set of installations via the job owner's `users.site_id`. An empty
+    /// `installations` slice means "no site filter".
+    ///
+    /// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AccountingError::Database`] on persistence failure.
+    fn monthly_totals(
+        &self,
+        installations: &[String],
+        start: NaiveDate,
+        end: NaiveDate,
+    ) -> impl Future<Output = Result<MonthlyTotals, AccountingError>> + Send;
 }

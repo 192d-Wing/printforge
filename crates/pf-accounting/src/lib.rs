@@ -29,7 +29,7 @@ pub mod service;
 pub mod service_impl;
 
 // Re-exports for convenience.
-pub use chargeback::{BillingPeriod, ChargebackReport, ChargebackReportBuilder};
+pub use chargeback::{BillingPeriod, ChargebackReport, ChargebackReportBuilder, MonthlyTotals};
 pub use config::{AccountingConfig, CostTableConfig};
 pub use cost_center::{AssignmentSource, CostCenterAssignment, UserCostProfile};
 pub use cost_model::{CostInput, FinishingOptions, JobCost, calculate_job_cost};

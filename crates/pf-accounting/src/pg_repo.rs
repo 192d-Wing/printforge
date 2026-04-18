@@ -12,7 +12,7 @@ use pf_common::identity::Edipi;
 use pf_common::job::{CostCenter, JobId};
 use sqlx::PgPool;
 
-use crate::chargeback::{BillingPeriod, ChargebackReport, CostBreakdown};
+use crate::chargeback::{BillingPeriod, ChargebackReport, CostBreakdown, MonthlyTotals};
 use crate::cost_center::{ProjectCode, UserCostProfile};
 use crate::cost_model::JobCost;
 use crate::error::AccountingError;
@@ -466,6 +466,61 @@ impl AccountingRepository for PgAccountingRepository {
             .map(ChargebackReportRow::try_into_report)
             .collect()
     }
+
+    async fn monthly_totals(
+        &self,
+        installations: &[String],
+        start: NaiveDate,
+        end: NaiveDate,
+    ) -> Result<MonthlyTotals, AccountingError> {
+        // Two branches: filtered (join to users) vs unfiltered (scan job_costs
+        // with a date range). The filtered path goes job_costs -> jobs -> users
+        // so we can constrain by owner's site.
+        let row = if installations.is_empty() {
+            sqlx::query_as::<_, MonthlyTotalsRow>(
+                "SELECT \
+                 COALESCE(SUM(total_impressions), 0)::bigint AS pages, \
+                 COALESCE(SUM(total_cost_cents), 0)::bigint AS cost_cents \
+                 FROM job_costs \
+                 WHERE calculated_at::date BETWEEN $1 AND $2 \
+                 AND is_estimate = FALSE",
+            )
+            .bind(start)
+            .bind(end)
+            .fetch_one(&self.pool)
+            .await
+        } else {
+            sqlx::query_as::<_, MonthlyTotalsRow>(
+                "SELECT \
+                 COALESCE(SUM(jc.total_impressions), 0)::bigint AS pages, \
+                 COALESCE(SUM(jc.total_cost_cents), 0)::bigint AS cost_cents \
+                 FROM job_costs jc \
+                 JOIN jobs j ON jc.job_id = j.id \
+                 JOIN users u ON j.owner_edipi = u.edipi \
+                 WHERE jc.calculated_at::date BETWEEN $1 AND $2 \
+                 AND jc.is_estimate = FALSE \
+                 AND u.site_id = ANY($3)",
+            )
+            .bind(start)
+            .bind(end)
+            .bind(installations.to_vec())
+            .fetch_one(&self.pool)
+            .await
+        }
+        .map_err(AccountingError::Database)?;
+
+        Ok(MonthlyTotals {
+            pages: u64::try_from(row.pages).unwrap_or(0),
+            cost_cents: u64::try_from(row.cost_cents).unwrap_or(0),
+        })
+    }
+}
+
+/// Internal row type for [`monthly_totals`](PgAccountingRepository::monthly_totals).
+#[derive(sqlx::FromRow)]
+struct MonthlyTotalsRow {
+    pages: i64,
+    cost_cents: i64,
 }
 
 #[cfg(test)]

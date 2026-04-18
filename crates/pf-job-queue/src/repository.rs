@@ -12,7 +12,7 @@ use pf_common::job::{JobId, JobMetadata, JobStatus};
 
 use crate::error::JobQueueError;
 use crate::retention::RetentionQuery;
-use crate::service::AdminJobSummary;
+use crate::service::{AdminJobSummary, JobStatusCounts};
 
 /// Repository trait for persisting and querying job metadata.
 ///
@@ -112,4 +112,18 @@ pub trait JobRepository: Send + Sync {
         limit: u32,
         offset: u32,
     ) -> impl std::future::Future<Output = Result<(Vec<AdminJobSummary>, u64), JobQueueError>> + Send;
+
+    /// Count jobs by status, scoped to a set of installations via the
+    /// owner's `users.site_id`. An empty `installations` slice means no
+    /// site filter.
+    ///
+    /// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+    ///
+    /// # Errors
+    ///
+    /// Returns `JobQueueError::Repository` on persistence failure.
+    fn count_by_status(
+        &self,
+        installations: &[String],
+    ) -> impl std::future::Future<Output = Result<JobStatusCounts, JobQueueError>> + Send;
 }

@@ -16,7 +16,7 @@ use tracing::{info, warn};
 use crate::error::JobQueueError;
 use crate::lifecycle;
 use crate::repository::JobRepository;
-use crate::service::{AdminJobSummary, JobService, JobSummary, SubmitJobRequest};
+use crate::service::{AdminJobSummary, JobService, JobStatusCounts, JobSummary, SubmitJobRequest};
 
 /// Determines whether the caller is authorized to access or mutate the given job.
 ///
@@ -237,6 +237,13 @@ impl<R: JobRepository + Send + Sync + 'static> JobService for JobServiceImpl<R> 
                 .await
         })
     }
+
+    fn count_by_status(
+        &self,
+        installations: Vec<String>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<JobStatusCounts, JobQueueError>> + Send + '_>> {
+        Box::pin(async move { self.repo.count_by_status(&installations).await })
+    }
 }
 
 #[cfg(test)]
@@ -370,6 +377,41 @@ mod tests {
                 }
             }
             Ok(count)
+        }
+
+        async fn count_by_status(
+            &self,
+            installations: &[String],
+        ) -> Result<JobStatusCounts, JobQueueError> {
+            let directory = self.user_directory.lock().map_err(|e| {
+                JobQueueError::Repository(format!("lock poisoned: {e}").into())
+            })?;
+            let map = self.jobs.lock().map_err(|e| {
+                JobQueueError::Repository(format!("lock poisoned: {e}").into())
+            })?;
+
+            let mut counts = JobStatusCounts::default();
+            for job in map.values() {
+                if !installations.is_empty() {
+                    let site = directory
+                        .get(job.owner.as_str())
+                        .map(|(_, s)| s.clone())
+                        .unwrap_or_default();
+                    if !installations.iter().any(|i| i == &site) {
+                        continue;
+                    }
+                }
+                match job.status {
+                    JobStatus::Held => counts.held += 1,
+                    JobStatus::Waiting => counts.waiting += 1,
+                    JobStatus::Releasing => counts.releasing += 1,
+                    JobStatus::Printing => counts.printing += 1,
+                    JobStatus::Completed => counts.completed += 1,
+                    JobStatus::Failed => counts.failed += 1,
+                    JobStatus::Purged => counts.purged += 1,
+                }
+            }
+            Ok(counts)
         }
 
         async fn list_admin_scoped(
@@ -716,6 +758,27 @@ mod tests {
         assert_eq!(page1.len(), 2);
         assert_eq!(page2.len(), 2);
         assert_eq!(page3.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn nist_ac3_count_by_status_enforces_site_scope() {
+        // NIST 800-53 Rev 5: AC-3 — Access Enforcement
+        // Evidence: the dashboard KPI totals a site admin sees reflect only
+        // jobs owned by users at their installations.
+        let repo = InMemoryJobRepository::new();
+        repo.set_user("1111111111", "DOE, JOHN Q.", "langley");
+        repo.set_user("2222222222", "SMITH, JANE A.", "ramstein");
+        let svc = JobServiceImpl::new(repo);
+
+        svc.submit_job(make_user("1111111111"), make_submit_request()).await.unwrap();
+        svc.submit_job(make_user("1111111111"), make_submit_request()).await.unwrap();
+        svc.submit_job(make_user("2222222222"), make_submit_request()).await.unwrap();
+
+        let counts = svc.count_by_status(vec!["langley".to_string()]).await.unwrap();
+        assert_eq!(counts.held, 2);
+
+        let counts_all = svc.count_by_status(Vec::new()).await.unwrap();
+        assert_eq!(counts_all.held, 3);
     }
 
     #[tokio::test]

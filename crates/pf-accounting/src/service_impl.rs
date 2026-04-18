@@ -14,7 +14,9 @@ use pf_common::identity::Edipi;
 use pf_common::job::CostCenter;
 use tracing::info;
 
-use crate::chargeback::{BillingPeriod, ChargebackEntry, ChargebackReport, ChargebackReportBuilder};
+use crate::chargeback::{
+    BillingPeriod, ChargebackEntry, ChargebackReport, ChargebackReportBuilder, MonthlyTotals,
+};
 use crate::error::AccountingError;
 use crate::repository::AccountingRepository;
 use crate::service::{AccountingService, QuotaStatusResponse};
@@ -142,6 +144,17 @@ where
             Ok(report)
         })
     }
+
+    fn monthly_totals(
+        &self,
+        installations: Vec<String>,
+        start: NaiveDate,
+        end: NaiveDate,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<MonthlyTotals, AccountingError>> + Send + '_>> {
+        Box::pin(async move {
+            self.repo.monthly_totals(&installations, start, end).await
+        })
+    }
 }
 
 #[cfg(test)]
@@ -263,6 +276,27 @@ mod tests {
             _cost_center: &CostCenter,
         ) -> Result<Vec<ChargebackReport>, AccountingError> {
             Ok(vec![])
+        }
+
+        async fn monthly_totals(
+            &self,
+            _installations: &[String],
+            start: NaiveDate,
+            end: NaiveDate,
+        ) -> Result<MonthlyTotals, AccountingError> {
+            // The mock ignores the `installations` filter — it has no
+            // user directory to resolve owner -> site. Tests that care
+            // about scope enforcement live against the real pg_repo.
+            let mut pages: u64 = 0;
+            let mut cost_cents: u64 = 0;
+            for jc in &self.job_costs {
+                let d = jc.calculated_at.date_naive();
+                if d >= start && d <= end && !jc.is_estimate {
+                    pages = pages.saturating_add(u64::from(jc.total_impressions));
+                    cost_cents = cost_cents.saturating_add(jc.total_cost_cents);
+                }
+            }
+            Ok(MonthlyTotals { pages, cost_cents })
         }
     }
 
@@ -496,6 +530,54 @@ mod tests {
     }
 
     // ── NIST compliance evidence tests ────────────────────────────
+
+    #[tokio::test]
+    async fn monthly_totals_sums_final_costs_in_range() {
+        let cc = test_cost_center();
+        let in_range = Utc.with_ymd_and_hms(2026, 3, 15, 10, 0, 0).unwrap();
+        let out_of_range = Utc.with_ymd_and_hms(2026, 4, 15, 10, 0, 0).unwrap();
+
+        let repo = MockRepo {
+            job_costs: vec![
+                test_job_cost(&cc, in_range),
+                test_color_job_cost(&cc, in_range),
+                test_job_cost(&cc, out_of_range),
+            ],
+            ..MockRepo::default()
+        };
+        let svc = AccountingServiceImpl::new(repo);
+
+        let start = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+        let end = NaiveDate::from_ymd_opt(2026, 3, 31).unwrap();
+
+        let totals = svc.monthly_totals(Vec::new(), start, end).await.unwrap();
+
+        // Two in-range jobs: 20 + 10 impressions = 30; 60 + 150 cents = 210.
+        assert_eq!(totals.pages, 30);
+        assert_eq!(totals.cost_cents, 210);
+    }
+
+    #[tokio::test]
+    async fn monthly_totals_excludes_estimates() {
+        let cc = test_cost_center();
+        let ts = Utc.with_ymd_and_hms(2026, 3, 15, 10, 0, 0).unwrap();
+        let mut estimate = test_job_cost(&cc, ts);
+        estimate.is_estimate = true;
+
+        let repo = MockRepo {
+            job_costs: vec![estimate],
+            ..MockRepo::default()
+        };
+        let svc = AccountingServiceImpl::new(repo);
+
+        let start = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+        let end = NaiveDate::from_ymd_opt(2026, 3, 31).unwrap();
+
+        let totals = svc.monthly_totals(Vec::new(), start, end).await.unwrap();
+
+        assert_eq!(totals.pages, 0);
+        assert_eq!(totals.cost_cents, 0);
+    }
 
     #[tokio::test]
     async fn nist_au12_quota_status_query_succeeds() {

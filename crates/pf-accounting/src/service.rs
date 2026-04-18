@@ -18,7 +18,7 @@ use chrono::NaiveDate;
 use pf_common::identity::Edipi;
 use pf_common::job::CostCenter;
 
-use crate::chargeback::ChargebackReport;
+use crate::chargeback::{ChargebackReport, MonthlyTotals};
 use crate::error::AccountingError;
 
 /// Response containing a user's current quota status.
@@ -93,4 +93,20 @@ pub trait AccountingService: Send + Sync {
         to: NaiveDate,
         cost_center_filter: Option<CostCenter>,
     ) -> Pin<Box<dyn Future<Output = Result<ChargebackReport, AccountingError>> + Send + '_>>;
+
+    /// Return aggregate print totals (impressions + `cost_cents`) for the
+    /// given date range, optionally scoped to a set of installations via
+    /// the job owner's `users.site_id`.
+    ///
+    /// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AccountingError::Database`] on persistence failure.
+    fn monthly_totals(
+        &self,
+        installations: Vec<String>,
+        start: NaiveDate,
+        end: NaiveDate,
+    ) -> Pin<Box<dyn Future<Output = Result<MonthlyTotals, AccountingError>> + Send + '_>>;
 }

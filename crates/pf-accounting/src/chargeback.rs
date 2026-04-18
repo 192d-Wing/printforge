@@ -65,6 +65,20 @@ pub struct ChargebackReport {
     pub generated_at: DateTime<Utc>,
 }
 
+/// Aggregated print totals for the current calendar month, scoped by the
+/// owner's installation. Returned by
+/// [`AccountingService::monthly_totals`](crate::service::AccountingService::monthly_totals)
+/// for the admin dashboard KPI widget.
+///
+/// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MonthlyTotals {
+    /// Total impressions in the period.
+    pub pages: u64,
+    /// Total cost in cents across the period.
+    pub cost_cents: u64,
+}
+
 /// Breakdown of costs by category within a chargeback report.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CostBreakdown {
