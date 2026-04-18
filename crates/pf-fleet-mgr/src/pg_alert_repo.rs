@@ -5,7 +5,7 @@
 //!
 //! **NIST 800-53 Rev 5:** SI-4 — System Monitoring
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use pf_common::fleet::PrinterId;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -258,6 +258,22 @@ impl AlertRepository for PgAlertRepository {
         }
 
         self.get_by_id(id).await
+    }
+
+    async fn sweep_resolved_before(
+        &self,
+        cutoff: DateTime<Utc>,
+    ) -> Result<u64, FleetError> {
+        let result = sqlx::query(
+            "DELETE FROM alerts WHERE state = 'Resolved' AND resolved_at IS NOT NULL \
+             AND resolved_at < $1",
+        )
+        .bind(cutoff)
+        .execute(&self.pool)
+        .await
+        .map_err(FleetError::Repository)?;
+
+        Ok(result.rows_affected())
     }
 }
 

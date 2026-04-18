@@ -145,6 +145,21 @@ pub trait AlertRepository: Send + Sync {
         id: Uuid,
         by_edipi: &str,
     ) -> impl Future<Output = Result<StoredAlert, FleetError>> + Send;
+
+    /// Retention sweep: delete alerts in the `Resolved` state whose
+    /// `resolved_at` is older than `cutoff`. Returns the number of rows
+    /// deleted. Active and Acknowledged alerts are never swept.
+    ///
+    /// Intended to be called periodically by a retention cron; the admin
+    /// dashboard does not invoke this.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FleetError::Repository`] on persistence failure.
+    fn sweep_resolved_before(
+        &self,
+        cutoff: DateTime<Utc>,
+    ) -> impl Future<Output = Result<u64, FleetError>> + Send;
 }
 
 /// High-level alert service used by the admin dashboard.
@@ -188,6 +203,16 @@ pub trait AlertService: Send + Sync {
         id: Uuid,
         by_edipi: String,
     ) -> Pin<Box<dyn Future<Output = Result<StoredAlert, FleetError>> + Send + '_>>;
+
+    /// Delete resolved alerts older than `cutoff`. Returns rows deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FleetError::Repository`] on persistence failure.
+    fn sweep_resolved_before(
+        &self,
+        cutoff: DateTime<Utc>,
+    ) -> Pin<Box<dyn Future<Output = Result<u64, FleetError>> + Send + '_>>;
 }
 
 /// Default `AlertService` implementation backed by an [`AlertRepository`].
@@ -231,6 +256,13 @@ impl<R: AlertRepository + 'static> AlertService for AlertServiceImpl<R> {
         by_edipi: String,
     ) -> Pin<Box<dyn Future<Output = Result<StoredAlert, FleetError>> + Send + '_>> {
         Box::pin(async move { self.repo.acknowledge(id, &by_edipi).await })
+    }
+
+    fn sweep_resolved_before(
+        &self,
+        cutoff: DateTime<Utc>,
+    ) -> Pin<Box<dyn Future<Output = Result<u64, FleetError>> + Send + '_>> {
+        Box::pin(async move { self.repo.sweep_resolved_before(cutoff).await })
     }
 }
 
@@ -306,6 +338,26 @@ mod in_memory {
             alert.acknowledged_at = Some(Utc::now());
             alert.acknowledged_by = Some(by_edipi.to_string());
             Ok(alert.clone())
+        }
+
+        async fn sweep_resolved_before(
+            &self,
+            cutoff: chrono::DateTime<chrono::Utc>,
+        ) -> Result<u64, FleetError> {
+            let mut map = self.alerts.lock().unwrap();
+            let to_delete: Vec<Uuid> = map
+                .values()
+                .filter(|a| {
+                    a.state == AlertState::Resolved
+                        && a.resolved_at.is_some_and(|ts| ts < cutoff)
+                })
+                .map(|a| a.id)
+                .collect();
+            let deleted = to_delete.len() as u64;
+            for id in to_delete {
+                map.remove(&id);
+            }
+            Ok(deleted)
         }
     }
 }
@@ -392,6 +444,38 @@ mod tests {
             .acknowledge(Uuid::new_v4(), "1234567890".to_string())
             .await;
         assert!(matches!(result, Err(FleetError::PrinterNotFound)));
+    }
+
+    #[tokio::test]
+    async fn sweep_resolved_before_deletes_old_resolved() {
+        use chrono::Duration;
+        let repo = InMemoryAlertRepository::new();
+        let now = Utc::now();
+
+        // Old resolved — should be swept.
+        let mut old_resolved = sample("langley", AlertState::Resolved);
+        old_resolved.resolved_at = Some(now - Duration::days(31));
+        repo.insert(&old_resolved).await.unwrap();
+
+        // Recent resolved — should NOT be swept.
+        let mut recent_resolved = sample("langley", AlertState::Resolved);
+        recent_resolved.resolved_at = Some(now - Duration::days(1));
+        repo.insert(&recent_resolved).await.unwrap();
+
+        // Old but Active — must never be swept even if ancient.
+        let active = sample("langley", AlertState::Active);
+        repo.insert(&active).await.unwrap();
+
+        let svc = AlertServiceImpl::new(repo);
+        let deleted = svc
+            .sweep_resolved_before(now - Duration::days(30))
+            .await
+            .unwrap();
+        assert_eq!(deleted, 1);
+
+        let (remaining, _) = svc.list_scoped(Vec::new(), None, 25, 0).await.unwrap();
+        assert_eq!(remaining.len(), 2);
+        assert!(remaining.iter().all(|a| a.id != old_resolved.id));
     }
 
     #[test]
