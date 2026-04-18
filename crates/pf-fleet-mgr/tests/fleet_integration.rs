@@ -470,6 +470,7 @@ fn integration_printer_update_default_is_empty() {
 fn integration_printer_query_filters() {
     let query = PrinterQuery {
         installation: Some("Test Base AFB".to_string()),
+        installations: Vec::new(),
         building: Some("100".to_string()),
         status: Some(PrinterStatus::Online),
         vendor: None,

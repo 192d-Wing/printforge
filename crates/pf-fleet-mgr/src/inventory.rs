@@ -90,8 +90,20 @@ pub struct PrinterUpdate {
 /// Criteria for querying the printer inventory.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PrinterQuery {
-    /// Filter by installation name.
+    /// Filter by installation name (exact match).
+    ///
+    /// Mutually exclusive with [`Self::installations`] in practice — if both
+    /// are set, repository implementations apply `installation` as an
+    /// additional equality constraint.
     pub installation: Option<String>,
+    /// Filter to printers whose installation is one of the given values.
+    ///
+    /// Empty vector means no installation-set constraint. Used for multi-site
+    /// scope enforcement (e.g. a Site Admin authorized for multiple sites).
+    ///
+    /// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+    #[serde(default)]
+    pub installations: Vec<String>,
     /// Filter by building.
     pub building: Option<String>,
     /// Filter by operational status.

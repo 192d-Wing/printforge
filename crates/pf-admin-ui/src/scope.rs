@@ -56,6 +56,26 @@ pub fn derive_scope(roles: &[Role]) -> Result<DataScope, AdminUiError> {
     Ok(DataScope::Sites(sites))
 }
 
+/// Convert a [`DataScope`] into the list of installation names used by the
+/// fleet/jobs repositories to filter rows.
+///
+/// Returns an empty vector for [`DataScope::Global`] (meaning "no site
+/// filter"). For [`DataScope::Sites`], returns the inner installation
+/// strings.
+///
+/// Callers feed the result into `PrinterQuery::installations` (or the
+/// equivalent field on other services). An empty vector means unfiltered
+/// in the repo layer.
+///
+/// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+#[must_use]
+pub fn scope_to_installations(scope: &DataScope) -> Vec<String> {
+    match scope {
+        DataScope::Global => Vec::new(),
+        DataScope::Sites(sites) => sites.iter().map(|s| s.0.clone()).collect(),
+    }
+}
+
 /// Check that a specific site is visible under the given scope.
 ///
 /// # Errors
@@ -140,6 +160,21 @@ mod tests {
         let scope = DataScope::Global;
         let result = require_site_access(&scope, &site("anywhere"));
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn nist_ac3_scope_to_installations_global_is_empty() {
+        // Global scope applies no installation filter — repositories treat
+        // an empty `installations` list as "no constraint".
+        let scope = DataScope::Global;
+        assert!(scope_to_installations(&scope).is_empty());
+    }
+
+    #[test]
+    fn nist_ac3_scope_to_installations_passes_site_names() {
+        let scope = DataScope::Sites(vec![site("langley"), site("ramstein")]);
+        let installations = scope_to_installations(&scope);
+        assert_eq!(installations, vec!["langley".to_string(), "ramstein".to_string()]);
     }
 
     #[test]

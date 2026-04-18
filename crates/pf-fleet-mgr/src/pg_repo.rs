@@ -328,6 +328,10 @@ impl PrinterRepository for PgPrinterRepository {
             param_idx += 1;
             where_clauses.push(format!("location_installation = ${param_idx}"));
         }
+        if !query.installations.is_empty() {
+            param_idx += 1;
+            where_clauses.push(format!("location_installation = ANY(${param_idx})"));
+        }
         if query.building.is_some() {
             param_idx += 1;
             where_clauses.push(format!("location_building = ${param_idx}"));
@@ -371,6 +375,9 @@ impl PrinterRepository for PgPrinterRepository {
 
         if let Some(ref installation) = query.installation {
             db_query = db_query.bind(installation);
+        }
+        if !query.installations.is_empty() {
+            db_query = db_query.bind(query.installations.clone());
         }
         if let Some(ref building) = query.building {
             db_query = db_query.bind(building);

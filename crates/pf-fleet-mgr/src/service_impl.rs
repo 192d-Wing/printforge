@@ -60,8 +60,10 @@ fn to_summary(record: &PrinterRecord) -> PrinterSummary {
         model: record.model.clone(),
         status: record.status,
         location: record.location.clone(),
+        supply_levels: record.supply_levels,
         health_score: record.health_score,
         updated_at: record.updated_at,
+        last_polled_at: record.last_polled_at,
     }
 }
 
@@ -179,6 +181,7 @@ impl<R: PrinterRepository + 'static> FleetService for FleetServiceImpl<R> {
 /// Returns `true` if no filter criteria are set on the query.
 fn filter_is_empty(q: &PrinterQuery) -> bool {
     q.installation.is_none()
+        && q.installations.is_empty()
         && q.building.is_none()
         && q.status.is_none()
         && q.vendor.is_none()
@@ -276,6 +279,11 @@ mod tests {
                         if r.location.installation != *inst {
                             return false;
                         }
+                    }
+                    if !query.installations.is_empty()
+                        && !query.installations.contains(&r.location.installation)
+                    {
+                        return false;
                     }
                     if let Some(ref building) = query.building {
                         if r.location.building != *building {

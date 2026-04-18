@@ -4,20 +4,25 @@
 //! Fleet overview route handlers.
 //!
 //! **NIST 800-53 Rev 5:** AC-3 — All fleet queries are scoped by the
-//! requester's [`DataScope`](crate::scope::DataScope).
+//! requester's [`DataScope`](crate::scope::DataScope) and translated into a
+//! [`PrinterQuery::installations`] filter.
 
+use axum::extract::State;
 use axum::routing::get;
 use axum::{Json, Router};
-use chrono::Utc;
 
 use pf_auth::middleware::RequireAuth;
-use pf_common::fleet::{PrinterId, PrinterModel, PrinterStatus, SupplyLevel};
+use pf_common::fleet::SupplyLevel;
 use pf_common::identity::SiteId;
+use pf_fleet_mgr::{PrinterQuery, PrinterSummary};
 
 use crate::error::AdminUiError;
 use crate::fleet_view::{FleetPrinterSummary, FleetStatusSummary, FleetViewResponse};
-use crate::scope::{derive_scope, DataScope};
+use crate::scope::{derive_scope, scope_to_installations};
 use crate::state::AdminState;
+
+/// Default page size when the client does not specify one.
+const DEFAULT_PAGE_SIZE: u32 = 25;
 
 /// Build the `/fleet` router.
 pub fn router() -> Router<AdminState> {
@@ -26,119 +31,216 @@ pub fn router() -> Router<AdminState> {
         .route("/printers", get(list_printers))
 }
 
-/// Build stub printer data scoped to the requester's authorized sites.
-fn stub_printers(scope: &DataScope) -> Vec<FleetPrinterSummary> {
-    let all_printers = vec![
-        FleetPrinterSummary {
-            printer_id: PrinterId::new("PRN-0042").expect("valid stub printer ID"),
-            display_name: "Bldg 100 Rm 201".to_string(),
-            site_id: SiteId("langley".to_string()),
-            location: "Building 100, Room 201".to_string(),
-            model: PrinterModel {
-                vendor: "HP".to_string(),
-                model: "LaserJet Enterprise M609".to_string(),
-            },
-            status: PrinterStatus::Online,
-            supply_levels: SupplyLevel {
-                toner_k: 75,
-                toner_c: 80,
-                toner_m: 65,
-                toner_y: 90,
-                paper: 50,
-            },
-            last_seen: Utc::now(),
-            health_score: 0.92,
-        },
-        FleetPrinterSummary {
-            printer_id: PrinterId::new("PRN-0099").expect("valid stub printer ID"),
-            display_name: "Bldg 300 Rm 102".to_string(),
-            site_id: SiteId("ramstein".to_string()),
-            location: "Building 300, Room 102".to_string(),
-            model: PrinterModel {
-                vendor: "Xerox".to_string(),
-                model: "VersaLink C405".to_string(),
-            },
-            status: PrinterStatus::Online,
-            supply_levels: SupplyLevel {
-                toner_k: 5,
-                toner_c: 60,
-                toner_m: 55,
-                toner_y: 70,
-                paper: 80,
-            },
-            last_seen: Utc::now(),
-            health_score: 0.45,
-        },
-    ];
-
-    match scope {
-        DataScope::Global => all_printers,
-        DataScope::Sites(sites) => all_printers
-            .into_iter()
-            .filter(|p| sites.contains(&p.site_id))
-            .collect(),
-    }
-}
-
 /// `GET /fleet/overview` — Return aggregated fleet status summary.
 ///
+/// Currently returns zeros; real aggregation requires a scope-aware
+/// `FleetService::status_summary` that does not exist yet. Leaving the route
+/// live so the admin SPA can wire its dashboard and get consistent 200
+/// responses during development.
+///
 /// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
-///
-/// # Errors
-///
-/// Returns `AdminUiError::AccessDenied` if the requester lacks admin access.
 async fn fleet_overview(
     RequireAuth(identity): RequireAuth,
 ) -> Result<Json<FleetStatusSummary>, AdminUiError> {
-    let scope = derive_scope(&identity.roles)?;
-    let printers = stub_printers(&scope);
-
-    let mut summary = FleetStatusSummary {
+    let _scope = derive_scope(&identity.roles)?;
+    Ok(Json(FleetStatusSummary {
         online: 0,
         offline: 0,
         error: 0,
         maintenance: 0,
         printing: 0,
-    };
-
-    for p in &printers {
-        match p.status {
-            PrinterStatus::Online => summary.online += 1,
-            PrinterStatus::Offline => summary.offline += 1,
-            PrinterStatus::Error => summary.error += 1,
-            PrinterStatus::Maintenance => summary.maintenance += 1,
-            PrinterStatus::Printing => summary.printing += 1,
-        }
-    }
-
-    Ok(Json(summary))
+    }))
 }
 
 /// `GET /fleet/printers` — Return a scoped printer list.
+///
+/// Backed by [`FleetService::list_printers`](pf_fleet_mgr::FleetService::list_printers)
+/// with a site-scoped `installations` filter derived from the caller's roles.
 ///
 /// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
 ///
 /// # Errors
 ///
-/// Returns `AdminUiError::AccessDenied` if the requester lacks admin access.
+/// - `AdminUiError::AccessDenied` if the caller lacks an admin role.
+/// - `AdminUiError::ServiceUnavailable` if the fleet service is not wired.
+/// - `AdminUiError::Internal` on underlying fleet-service failure.
 async fn list_printers(
+    State(state): State<AdminState>,
     RequireAuth(identity): RequireAuth,
 ) -> Result<Json<FleetViewResponse>, AdminUiError> {
     let scope = derive_scope(&identity.roles)?;
-    let printers = stub_printers(&scope);
-    let total_count = printers.len() as u64;
+    let fleet = state
+        .fleet
+        .as_ref()
+        .ok_or(AdminUiError::ServiceUnavailable { service: "fleet" })?;
+
+    let filter = PrinterQuery {
+        installations: scope_to_installations(&scope),
+        ..Default::default()
+    };
+
+    let (summaries, total_count) = fleet
+        .list_printers(filter, DEFAULT_PAGE_SIZE, 0)
+        .await
+        .map_err(|e| AdminUiError::Internal {
+            source: Box::new(e),
+        })?;
+
+    let printers = summaries
+        .into_iter()
+        .map(to_fleet_printer_summary)
+        .collect();
 
     Ok(Json(FleetViewResponse {
         printers,
         total_count,
         page: 1,
-        page_size: 25,
+        page_size: DEFAULT_PAGE_SIZE,
     }))
+}
+
+/// Map the fleet-mgr [`PrinterSummary`] onto the admin-ui wire type.
+///
+/// - `site_id` is derived from `PrinterLocation.installation`.
+/// - `display_name` and `location` are synthesized from building + room; the
+///   printer ID is used as a display fallback when location is empty.
+/// - `health_score` is converted from the integer 0..=100 form to an `f64`
+///   ratio in `[0.0, 1.0]`, defaulting to 0.0 when the record has no score.
+/// - `supply_levels` falls back to all-zero when the record has no reading.
+/// - `last_seen` falls back to `updated_at` when the printer has never
+///   polled.
+fn to_fleet_printer_summary(s: PrinterSummary) -> FleetPrinterSummary {
+    let display_name = if s.location.building.is_empty() && s.location.room.is_empty() {
+        s.id.as_str().to_string()
+    } else {
+        format!("Bldg {} Rm {}", s.location.building, s.location.room)
+    };
+
+    let location = format!(
+        "Building {}, Room {}",
+        s.location.building, s.location.room
+    );
+
+    let health_score = s.health_score.map_or(0.0, |h| f64::from(h) / 100.0);
+
+    let supply_levels = s.supply_levels.unwrap_or(SupplyLevel {
+        toner_k: 0,
+        toner_c: 0,
+        toner_m: 0,
+        toner_y: 0,
+        paper: 0,
+    });
+
+    let last_seen = s.last_polled_at.unwrap_or(s.updated_at);
+
+    FleetPrinterSummary {
+        printer_id: s.id,
+        display_name,
+        site_id: SiteId(s.location.installation.clone()),
+        location,
+        model: s.model,
+        status: s.status,
+        supply_levels,
+        last_seen,
+        health_score,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use pf_common::fleet::{PrinterId, PrinterModel, PrinterStatus};
+    use pf_fleet_mgr::PrinterLocation;
+
+    fn sample_fleet_summary(id: &str, installation: &str) -> PrinterSummary {
+        PrinterSummary {
+            id: PrinterId::new(id).unwrap(),
+            model: PrinterModel {
+                vendor: "HP".to_string(),
+                model: "M609".to_string(),
+            },
+            status: PrinterStatus::Online,
+            location: PrinterLocation {
+                installation: installation.to_string(),
+                building: "100".to_string(),
+                floor: "2".to_string(),
+                room: "201".to_string(),
+            },
+            supply_levels: Some(SupplyLevel {
+                toner_k: 80,
+                toner_c: 75,
+                toner_m: 90,
+                toner_y: 85,
+                paper: 70,
+            }),
+            health_score: Some(92),
+            updated_at: Utc::now(),
+            last_polled_at: Some(Utc::now()),
+        }
+    }
+
+    #[test]
+    fn nist_ac3_to_fleet_printer_summary_maps_site_id_from_installation() {
+        // NIST 800-53 Rev 5: AC-3 — Access Enforcement
+        // Evidence: the admin-ui `site_id` is sourced from the database
+        // `location_installation` column, so site-scope filters applied at
+        // the repository layer travel end-to-end to the client.
+        let summary = sample_fleet_summary("PRN-0042", "langley");
+        let mapped = to_fleet_printer_summary(summary);
+        assert_eq!(mapped.site_id, SiteId("langley".to_string()));
+    }
+
+    #[test]
+    fn to_fleet_printer_summary_synthesizes_display_name_and_location() {
+        let summary = sample_fleet_summary("PRN-0042", "langley");
+        let mapped = to_fleet_printer_summary(summary);
+        assert_eq!(mapped.display_name, "Bldg 100 Rm 201");
+        assert_eq!(mapped.location, "Building 100, Room 201");
+    }
+
+    #[test]
+    fn to_fleet_printer_summary_falls_back_to_printer_id_when_location_empty() {
+        let mut summary = sample_fleet_summary("PRN-0042", "langley");
+        summary.location.building = String::new();
+        summary.location.room = String::new();
+        let mapped = to_fleet_printer_summary(summary);
+        assert_eq!(mapped.display_name, "PRN-0042");
+    }
+
+    #[test]
+    fn to_fleet_printer_summary_normalizes_health_score_to_ratio() {
+        let summary = sample_fleet_summary("PRN-0042", "langley");
+        let mapped = to_fleet_printer_summary(summary);
+        assert!((mapped.health_score - 0.92).abs() < 1e-9);
+    }
+
+    #[test]
+    fn to_fleet_printer_summary_defaults_health_score_when_unknown() {
+        let mut summary = sample_fleet_summary("PRN-0042", "langley");
+        summary.health_score = None;
+        let mapped = to_fleet_printer_summary(summary);
+        assert!((mapped.health_score - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn to_fleet_printer_summary_defaults_supplies_when_unreported() {
+        let mut summary = sample_fleet_summary("PRN-0042", "langley");
+        summary.supply_levels = None;
+        let mapped = to_fleet_printer_summary(summary);
+        assert_eq!(mapped.supply_levels.toner_k, 0);
+        assert_eq!(mapped.supply_levels.paper, 0);
+    }
+
+    #[test]
+    fn to_fleet_printer_summary_falls_back_last_seen_to_updated_at() {
+        let mut summary = sample_fleet_summary("PRN-0042", "langley");
+        summary.last_polled_at = None;
+        let expected = summary.updated_at;
+        let mapped = to_fleet_printer_summary(summary);
+        assert_eq!(mapped.last_seen, expected);
+    }
+
     #[test]
     fn fleet_overview_serializes() {
         let summary = FleetStatusSummary {
@@ -153,34 +255,10 @@ mod tests {
     }
 
     #[test]
-    fn nist_ac3_site_admin_sees_only_own_site_printers() {
-        // NIST 800-53 Rev 5: AC-3 — Access Enforcement
-        // Evidence: Site admin for langley cannot see ramstein printers.
-        let scope = DataScope::Sites(vec![SiteId("langley".to_string())]);
-        let printers = stub_printers(&scope);
-        assert!(printers
-            .iter()
-            .all(|p| p.site_id == SiteId("langley".to_string())));
-        assert!(!printers.is_empty());
-    }
-
-    #[test]
-    fn nist_ac3_global_scope_sees_all_printers() {
-        // NIST 800-53 Rev 5: AC-3 — Access Enforcement
-        // Evidence: Fleet admin sees printers from all sites.
-        let scope = DataScope::Global;
-        let printers = stub_printers(&scope);
-        let sites: Vec<&SiteId> = printers.iter().map(|p| &p.site_id).collect();
-        assert!(sites.contains(&&SiteId("langley".to_string())));
-        assert!(sites.contains(&&SiteId("ramstein".to_string())));
-    }
-
-    #[test]
     fn fleet_view_response_includes_pagination() {
-        let printers = stub_printers(&DataScope::Global);
         let response = FleetViewResponse {
-            total_count: printers.len() as u64,
-            printers,
+            printers: vec![],
+            total_count: 0,
             page: 1,
             page_size: 25,
         };

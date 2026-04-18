@@ -36,10 +36,14 @@ pub struct PrinterSummary {
     pub status: PrinterStatus,
     /// Physical location within the installation.
     pub location: PrinterLocation,
+    /// Current supply levels, if reported.
+    pub supply_levels: Option<SupplyLevel>,
     /// Current health score (0--100), if available.
     pub health_score: Option<u8>,
     /// When the printer record was last updated.
     pub updated_at: DateTime<Utc>,
+    /// When the last successful SNMP/IPP poll occurred, if any.
+    pub last_polled_at: Option<DateTime<Utc>>,
 }
 
 /// Full printer detail for the single-printer view.
