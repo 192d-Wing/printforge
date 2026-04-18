@@ -6,11 +6,14 @@
 //! **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
 //! Every route MUST be authenticated unless explicitly allowlisted.
 
+use std::sync::Arc;
+
 use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
+use pf_admin_ui::AdminState;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
@@ -33,7 +36,9 @@ pub const PUBLIC_ROUTES: &[&str] = &["/healthz", "/readyz"];
 pub fn build_router(state: AppState) -> Router {
     let cors = build_cors_layer(&state);
 
-    let api_v1 = crate::routes::api_routes();
+    let admin = pf_admin_ui::routes::admin_routes().with_state(build_admin_state(&state));
+
+    let api_v1 = crate::routes::api_routes().nest("/admin", admin);
 
     let public = Router::new()
         .route("/healthz", get(healthz))
@@ -46,6 +51,16 @@ pub fn build_router(state: AppState) -> Router {
         .layer(TraceLayer::new_for_http())
         .layer(RequestIdLayer)
         .with_state(state)
+}
+
+/// Project the gateway's [`AppState`] onto the subset of state the admin-ui
+/// router needs (JWT verification config).
+fn build_admin_state(state: &AppState) -> AdminState {
+    AdminState {
+        jwt_decoding_key: state.jwt_decoding_key.clone(),
+        jwt_issuer: Arc::from(state.config.jwt.issuer.as_str()),
+        jwt_audience: Arc::from(state.config.jwt.audience.as_str()),
+    }
 }
 
 /// Build the CORS layer from configuration.
@@ -187,6 +202,34 @@ mod tests {
         assert!(PUBLIC_ROUTES.contains(&"/healthz"));
         assert!(PUBLIC_ROUTES.contains(&"/readyz"));
         assert_eq!(PUBLIC_ROUTES.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn nist_ia2_admin_route_rejects_unauthenticated_request() {
+        // NIST 800-53 Rev 5: IA-2 — Identification and Authentication
+        // Evidence: /api/v1/admin/** requires a valid JWT; missing bearer
+        // token yields 401.
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/v1/admin/dashboard/kpis")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn admin_route_without_decoding_key_rejects_bearer_token() {
+        // With no JWT public key configured, RequireAuth rejects every
+        // token — including otherwise well-formed bearer tokens.
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/v1/admin/dashboard/kpis")
+            .header("Authorization", "Bearer not-a-real-token")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

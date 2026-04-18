@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 pf-common = { path = "../pf-common" }
 pf-auth = { path = "../pf-auth" }
+pf-admin-ui = { path = "../pf-admin-ui" }
 pf-job-queue = { path = "../pf-job-queue" }
 pf-fleet-mgr = { path = "../pf-fleet-mgr" }
 pf-accounting = { path = "../pf-accounting" }
