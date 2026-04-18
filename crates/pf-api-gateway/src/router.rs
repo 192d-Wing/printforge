@@ -54,12 +54,17 @@ pub fn build_router(state: AppState) -> Router {
 }
 
 /// Project the gateway's [`AppState`] onto the subset of state the admin-ui
-/// router needs (JWT verification config).
+/// router needs: JWT verification config plus backend service handles.
 fn build_admin_state(state: &AppState) -> AdminState {
     AdminState {
         jwt_decoding_key: state.jwt_decoding_key.clone(),
         jwt_issuer: Arc::from(state.config.jwt.issuer.as_str()),
         jwt_audience: Arc::from(state.config.jwt.audience.as_str()),
+        fleet: state.fleet_service.clone(),
+        jobs: state.job_service.clone(),
+        accounting: state.accounting_service.clone(),
+        audit: state.audit_service.clone(),
+        users: state.user_service.clone(),
     }
 }
 

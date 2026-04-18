@@ -30,6 +30,18 @@ pub enum AdminUiError {
         entity: String,
     },
 
+    /// A backend service required to satisfy the request is not wired.
+    ///
+    /// Returned when the admin state's service handle for a given domain
+    /// (fleet, jobs, accounting, audit, users) is `None`. Surfaced as HTTP
+    /// 503 so clients and probes can distinguish this from authorization or
+    /// input failures.
+    #[error("service unavailable: {service}")]
+    ServiceUnavailable {
+        /// Short service name ("fleet", "jobs", "accounting", "audit", "users").
+        service: &'static str,
+    },
+
     /// Input validation failed.
     #[error("validation error: {0}")]
     Validation(#[from] pf_common::error::ValidationError),
@@ -74,6 +86,13 @@ impl IntoResponse for AdminUiError {
                 (StatusCode::FORBIDDEN, self.to_string())
             }
             Self::NotFound { .. } => (StatusCode::NOT_FOUND, self.to_string()),
+            Self::ServiceUnavailable { service } => {
+                tracing::warn!(service = %service, "admin-ui service handle not configured");
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "service unavailable".to_string(),
+                )
+            }
             Self::Validation(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             Self::Internal { source } => {
                 tracing::error!(error = %source, "internal admin UI error");

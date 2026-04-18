@@ -11,6 +11,11 @@ publish.workspace = true
 [dependencies]
 pf-common = { path = "../pf-common" }
 pf-auth = { path = "../pf-auth" }
+pf-fleet-mgr = { path = "../pf-fleet-mgr" }
+pf-job-queue = { path = "../pf-job-queue" }
+pf-accounting = { path = "../pf-accounting" }
+pf-audit = { path = "../pf-audit" }
+pf-user-provisioning = { path = "../pf-user-provisioning" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
