@@ -17,6 +17,7 @@ use chrono::{Datelike, NaiveDate, Utc};
 
 use pf_auth::middleware::RequireAuth;
 use pf_common::identity::Role;
+use pf_fleet_mgr::AlertState;
 
 use crate::dashboard::DashboardKpis;
 use crate::error::AdminUiError;
@@ -85,11 +86,27 @@ async fn get_kpis(
     let now = Utc::now();
     let (start, end) = current_month_range(now.date_naive());
     let totals = accounting
-        .monthly_totals(installations, start, end)
+        .monthly_totals(installations.clone(), start, end)
         .await
         .map_err(|e| AdminUiError::Internal {
             source: Box::new(e),
         })?;
+
+    // Active alert count is best-effort: if the AlertService handle isn't
+    // wired we report 0 rather than 503 the whole dashboard. A missing
+    // fleet/jobs/accounting handle DOES 503 because those numbers would be
+    // misleading; a missing alert count is obvious (zero).
+    let active_alerts = match state.alerts.as_ref() {
+        Some(svc) => {
+            svc.list_scoped(installations, Some(AlertState::Active), 1, 0)
+                .await
+                .map(|(_, total)| total)
+                .map_err(|e| AdminUiError::Internal {
+                    source: Box::new(e),
+                })?
+        }
+        None => 0,
+    };
 
     let total_printers = fleet_counts.online
         + fleet_counts.offline
@@ -109,9 +126,7 @@ async fn get_kpis(
         active_jobs,
         monthly_pages: totals.pages,
         monthly_cost_cents: totals.cost_cents,
-        // AlertService does not exist yet; report 0 so the SPA can render
-        // a blank KPI until the alert slice lands.
-        active_alerts: 0,
+        active_alerts,
     }))
 }
 
