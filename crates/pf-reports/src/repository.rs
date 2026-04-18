@@ -34,6 +34,46 @@ pub trait ReportRepository: Send + Sync {
         &self,
         id: Uuid,
     ) -> impl Future<Output = Result<ReportRecord, ReportError>> + Send;
+
+    /// Atomically claim the next `Pending` report for a worker, transitioning
+    /// it to `Generating`. Returns `None` if no pending work is available.
+    ///
+    /// The pg implementation uses `SELECT ... FOR UPDATE SKIP LOCKED` so
+    /// multiple workers can run in parallel without double-claiming.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReportError::Repository`] on persistence failure.
+    fn claim_next_pending(
+        &self,
+    ) -> impl Future<Output = Result<Option<ReportRecord>, ReportError>> + Send;
+
+    /// Mark a `Generating` row as `Ready`, recording the row count and the
+    /// artifact location (object-store path).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReportError::NotFound`] if no report has the given id.
+    /// Returns [`ReportError::Repository`] on persistence failure.
+    fn mark_ready(
+        &self,
+        id: Uuid,
+        row_count: u64,
+        output_location: Option<String>,
+    ) -> impl Future<Output = Result<(), ReportError>> + Send;
+
+    /// Mark a `Generating` row as `Failed`, recording a diagnostic for
+    /// display in the admin UI.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReportError::NotFound`] if no report has the given id.
+    /// Returns [`ReportError::Repository`] on persistence failure.
+    fn mark_failed(
+        &self,
+        id: Uuid,
+        reason: String,
+    ) -> impl Future<Output = Result<(), ReportError>> + Send;
 }
 
 // ── In-memory mock for tests ──────────────────────────────────────────────
@@ -89,6 +129,53 @@ mod in_memory {
         async fn get_by_id(&self, id: Uuid) -> Result<ReportRecord, ReportError> {
             let map = self.reports.lock().unwrap();
             map.get(&id).cloned().ok_or(ReportError::NotFound)
+        }
+
+        async fn claim_next_pending(&self) -> Result<Option<ReportRecord>, ReportError> {
+            let mut map = self.reports.lock().unwrap();
+            // Pick the oldest Pending row for deterministic test behavior.
+            let claim_id = map
+                .values()
+                .filter(|r| r.state == ReportState::Pending)
+                .min_by_key(|r| r.requested_at)
+                .map(|r| r.id);
+
+            if let Some(id) = claim_id {
+                if let Some(r) = map.get_mut(&id) {
+                    r.state = ReportState::Generating;
+                    return Ok(Some(r.clone()));
+                }
+            }
+            Ok(None)
+        }
+
+        async fn mark_ready(
+            &self,
+            id: Uuid,
+            row_count: u64,
+            output_location: Option<String>,
+        ) -> Result<(), ReportError> {
+            let mut map = self.reports.lock().unwrap();
+            let r = map.get_mut(&id).ok_or(ReportError::NotFound)?;
+            r.state = ReportState::Ready;
+            r.row_count = Some(row_count);
+            r.output_location = output_location;
+            r.completed_at = Some(Utc::now());
+            r.failure_reason = None;
+            Ok(())
+        }
+
+        async fn mark_failed(
+            &self,
+            id: Uuid,
+            reason: String,
+        ) -> Result<(), ReportError> {
+            let mut map = self.reports.lock().unwrap();
+            let r = map.get_mut(&id).ok_or(ReportError::NotFound)?;
+            r.state = ReportState::Failed;
+            r.failure_reason = Some(reason);
+            r.completed_at = Some(Utc::now());
+            Ok(())
         }
     }
 }

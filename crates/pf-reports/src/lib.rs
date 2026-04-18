@@ -19,6 +19,7 @@ pub mod repository;
 pub mod service;
 pub mod service_impl;
 pub mod types;
+pub mod worker;
 
 pub use error::ReportError;
 pub use pg_repo::PgReportRepository;
@@ -26,3 +27,4 @@ pub use repository::ReportRepository;
 pub use service::ReportService;
 pub use service_impl::ReportServiceImpl;
 pub use types::{NewReport, ReportFormat, ReportKind, ReportRecord, ReportState};
+pub use worker::{GenerationOutcome, GeneratorFn, ReportWorker};

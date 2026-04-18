@@ -99,8 +99,7 @@ fn parse_format(s: &str) -> Result<ReportFormat, ReportError> {
     }
 }
 
-/// Reserved for the report-generation worker, which will transition rows
-/// from Pending -> Generating -> Ready/Failed.
+/// Map a state enum to its DB string — used by the worker transitions.
 #[allow(dead_code)]
 fn state_to_str(s: ReportState) -> &'static str {
     match s {
@@ -176,6 +175,73 @@ impl ReportRepository for PgReportRepository {
         .ok_or(ReportError::NotFound)?;
 
         row.try_into_record()
+    }
+
+    async fn claim_next_pending(&self) -> Result<Option<ReportRecord>, ReportError> {
+        // SELECT ... FOR UPDATE SKIP LOCKED + CTE-based UPDATE so multiple
+        // workers can run in parallel. The inner SELECT picks the oldest
+        // Pending row; the UPDATE flips it to Generating and returns the
+        // full row in a single round-trip.
+        let row = sqlx::query_as::<_, ReportRow>(&format!(
+            "WITH claimed AS (\
+                SELECT id FROM reports \
+                WHERE state = 'Pending' \
+                ORDER BY requested_at \
+                FOR UPDATE SKIP LOCKED \
+                LIMIT 1\
+             ) \
+             UPDATE reports SET state = 'Generating' \
+             FROM claimed WHERE reports.id = claimed.id \
+             RETURNING {SELECT_COLUMNS}"
+        ))
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(ReportError::Repository)?;
+
+        row.map(ReportRow::try_into_record).transpose()
+    }
+
+    async fn mark_ready(
+        &self,
+        id: Uuid,
+        row_count: u64,
+        output_location: Option<String>,
+    ) -> Result<(), ReportError> {
+        let count_i64 = i64::try_from(row_count).unwrap_or(i64::MAX);
+        let rows_affected = sqlx::query(
+            "UPDATE reports SET state = 'Ready', row_count = $1, output_location = $2, \
+             failure_reason = NULL, completed_at = NOW() WHERE id = $3",
+        )
+        .bind(count_i64)
+        .bind(output_location)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(ReportError::Repository)?
+        .rows_affected();
+
+        if rows_affected == 0 {
+            return Err(ReportError::NotFound);
+        }
+        Ok(())
+    }
+
+    async fn mark_failed(&self, id: Uuid, reason: String) -> Result<(), ReportError> {
+        let rows_affected = sqlx::query(
+            "UPDATE reports SET state = 'Failed', failure_reason = $1, \
+             completed_at = NOW() WHERE id = $2",
+        )
+        .bind(reason)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(ReportError::Repository)?
+        .rows_affected();
+
+        if rows_affected == 0 {
+            return Err(ReportError::NotFound);
+        }
+        Ok(())
     }
 }
 
