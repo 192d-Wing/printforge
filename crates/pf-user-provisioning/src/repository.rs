@@ -13,6 +13,7 @@
 use pf_common::identity::Edipi;
 
 use crate::error::ProvisioningError;
+use crate::service::UserFilter;
 use crate::user::{ProvisionedUser, UserStatus};
 
 /// Persistence interface for [`ProvisionedUser`] records.
@@ -62,6 +63,24 @@ pub trait UserRepository: Send + Sync {
     /// Returns `ProvisioningError::Repository` on database failure.
     fn list_by_status(&self, status: UserStatus)
     -> Result<Vec<ProvisionedUser>, ProvisioningError>;
+
+    /// List users matching the given filter, paginated.
+    ///
+    /// Returns `(page, total_count)` where `total_count` is the count of
+    /// matching rows before pagination. An empty `filter.site_ids` means
+    /// "no site filter"; `filter.status == None` means "any status".
+    ///
+    /// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProvisioningError::Repository` on database failure.
+    fn list_filtered(
+        &self,
+        filter: &UserFilter,
+        limit: usize,
+        offset: usize,
+    ) -> Result<(Vec<ProvisionedUser>, u64), ProvisioningError>;
 }
 
 /// In-memory repository for testing.
@@ -164,6 +183,39 @@ impl UserRepository for InMemoryUserRepository {
             .filter(|u| u.status == status)
             .cloned()
             .collect())
+    }
+
+    fn list_filtered(
+        &self,
+        filter: &UserFilter,
+        limit: usize,
+        offset: usize,
+    ) -> Result<(Vec<ProvisionedUser>, u64), ProvisioningError> {
+        let users = self
+            .users
+            .lock()
+            .map_err(|e| ProvisioningError::Repository {
+                detail: format!("lock poisoned: {e}"),
+            })?;
+
+        let mut matching: Vec<ProvisionedUser> = users
+            .iter()
+            .filter(|u| match filter.status {
+                Some(s) => u.status == s,
+                None => true,
+            })
+            .filter(|u| {
+                filter.site_ids.is_empty() || filter.site_ids.contains(&u.site_id)
+            })
+            .cloned()
+            .collect();
+
+        // Deterministic ordering so paging is stable in tests.
+        matching.sort_by(|a, b| a.edipi.as_str().cmp(b.edipi.as_str()));
+
+        let total = u64::try_from(matching.len()).unwrap_or(u64::MAX);
+        let page = matching.into_iter().skip(offset).take(limit).collect();
+        Ok((page, total))
     }
 }
 

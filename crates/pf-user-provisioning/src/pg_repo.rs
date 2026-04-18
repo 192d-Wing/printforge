@@ -13,6 +13,7 @@ use sqlx::PgPool;
 
 use crate::error::ProvisioningError;
 use crate::repository::UserRepository;
+use crate::service::UserFilter;
 use crate::user::{ProvisionedUser, ProvisioningSource, UserPreferences, UserStatus};
 
 /// `PostgreSQL`-backed user repository.
@@ -301,6 +302,78 @@ impl UserRepository for PgUserRepository {
         }
 
         Ok(())
+    }
+
+    fn list_filtered(
+        &self,
+        filter: &UserFilter,
+        limit: usize,
+        offset: usize,
+    ) -> Result<(Vec<ProvisionedUser>, u64), ProvisioningError> {
+        let pool = self.pool.clone();
+
+        // Build WHERE clause dynamically so each branch stays index-friendly.
+        // status → idx_users_status; site_ids → idx_users_site_id.
+        let mut where_clauses: Vec<String> = Vec::new();
+        let mut param_idx: usize = 0;
+        if filter.status.is_some() {
+            param_idx += 1;
+            where_clauses.push(format!("status = ${param_idx}"));
+        }
+        if !filter.site_ids.is_empty() {
+            param_idx += 1;
+            where_clauses.push(format!("site_id = ANY(${param_idx})"));
+        }
+        let where_sql = if where_clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", where_clauses.join(" AND "))
+        };
+
+        let page_limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let page_offset = i64::try_from(offset).unwrap_or(0);
+
+        let select_sql = format!(
+            "SELECT id, edipi, display_name, organization, site_id, roles_json, \
+             cost_centers_json, preferences_json, status, provisioning_source, \
+             created_at, updated_at, last_login_at FROM users {where_sql} \
+             ORDER BY edipi LIMIT ${lim} OFFSET ${off}",
+            lim = param_idx + 1,
+            off = param_idx + 2,
+        );
+        let count_sql = format!("SELECT COUNT(*)::bigint FROM users {where_sql}");
+
+        let status_str = filter.status.map(|s| status_to_str(s).to_string());
+        let site_ids = filter.site_ids.clone();
+
+        let (rows, total) = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                let mut page_query = sqlx::query_as::<_, UserRow>(&select_sql);
+                let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
+                if let Some(ref s) = status_str {
+                    page_query = page_query.bind(s);
+                    count_query = count_query.bind(s);
+                }
+                if !site_ids.is_empty() {
+                    page_query = page_query.bind(site_ids.clone());
+                    count_query = count_query.bind(site_ids.clone());
+                }
+                page_query = page_query.bind(page_limit).bind(page_offset);
+
+                let rows = page_query.fetch_all(&pool).await?;
+                let total = count_query.fetch_one(&pool).await?;
+                Ok::<_, sqlx::Error>((rows, total))
+            })
+        })
+        .map_err(|e| ProvisioningError::Repository {
+            detail: format!("list_filtered failed: {e}"),
+        })?;
+
+        let users = rows
+            .into_iter()
+            .map(UserRow::try_into_user)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((users, u64::try_from(total).unwrap_or(0)))
     }
 
     fn list_by_status(

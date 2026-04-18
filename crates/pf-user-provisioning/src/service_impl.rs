@@ -44,25 +44,9 @@ impl UserService for DefaultUserService {
         limit: usize,
         offset: usize,
     ) -> Result<(Vec<ProvisionedUser>, u64), ProvisioningError> {
-        let all_matching = if let Some(status) = filter.status {
-            self.repo.list_by_status(status)?
-        } else {
-            // No status filter — fetch both active and suspended users.
-            let mut users = self.repo.list_by_status(UserStatus::Active)?;
-            let suspended = self.repo.list_by_status(UserStatus::Suspended)?;
-            users.extend(suspended);
-            users
-        };
-
-        let total = u64::try_from(all_matching.len()).unwrap_or(u64::MAX);
-
-        let page: Vec<ProvisionedUser> = all_matching
-            .into_iter()
-            .skip(offset)
-            .take(limit)
-            .collect();
-
-        Ok((page, total))
+        // Single paginated repo call; the repository applies status +
+        // site_ids filters and LIMIT/OFFSET at the SQL layer.
+        self.repo.list_filtered(filter, limit, offset)
     }
 
     /// Fetch a single user by EDIPI, returning an error if not found.
@@ -182,6 +166,7 @@ mod tests {
 
         let filter = UserFilter {
             status: Some(UserStatus::Active),
+            site_ids: Vec::new(),
         };
         let (users, total) = svc.list_users(&filter, 100, 0).unwrap();
         assert_eq!(total, 1);
@@ -206,6 +191,27 @@ mod tests {
         // Page 2: offset 2, limit 2
         let (page2, _) = svc.list_users(&filter, 2, 2).unwrap();
         assert_eq!(page2.len(), 1);
+    }
+
+    #[test]
+    fn nist_ac3_list_users_filters_by_site_ids() {
+        // NIST 800-53 Rev 5: AC-3 — Access Enforcement
+        // Evidence: a site admin's listing is restricted to users at their
+        // authorized sites, translated into WHERE site_id = ANY(...).
+        let mut langley = test_user("1111111111");
+        langley.site_id = "langley".to_string();
+        let mut ramstein = test_user("2222222222");
+        ramstein.site_id = "ramstein".to_string();
+        let svc = service_with_users(&[langley, ramstein]);
+
+        let filter = UserFilter {
+            status: None,
+            site_ids: vec!["langley".to_string()],
+        };
+        let (users, total) = svc.list_users(&filter, 100, 0).unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].site_id, "langley");
     }
 
     // --- get_user tests ---

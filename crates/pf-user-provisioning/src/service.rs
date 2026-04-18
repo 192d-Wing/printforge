@@ -19,6 +19,11 @@ use crate::user::{ProvisionedUser, UserStatus};
 pub struct UserFilter {
     /// If set, restrict results to users with this status.
     pub status: Option<UserStatus>,
+    /// If non-empty, restrict results to users whose `site_id` is in the
+    /// set. Used for multi-site admin scope enforcement.
+    ///
+    /// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+    pub site_ids: Vec<String>,
 }
 
 /// Business-logic interface for user management operations.
