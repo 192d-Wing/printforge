@@ -51,6 +51,8 @@ pub use nats_sync::NatsSyncBackend;
 pub use release::{ReleaseRequest, ReleaseResult, authorize_release};
 pub use repository::JobRepository;
 pub use retention::{RetentionQuery, RetentionSweepResult, is_eligible_for_purge};
-pub use service::{AdminJobSummary, JobService, JobStatusCounts, JobSummary, SubmitJobRequest};
+pub use service::{
+    AdminJobSummary, JobService, JobStatusCounts, JobSummary, SubmitJobRequest, WasteStats,
+};
 pub use service_impl::JobServiceImpl;
 pub use sync::{JobSyncMessage, SyncBackend, SyncBatchResult, SyncDirection};

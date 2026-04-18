@@ -16,7 +16,9 @@ use tracing::{info, warn};
 use crate::error::JobQueueError;
 use crate::lifecycle;
 use crate::repository::JobRepository;
-use crate::service::{AdminJobSummary, JobService, JobStatusCounts, JobSummary, SubmitJobRequest};
+use crate::service::{
+    AdminJobSummary, JobService, JobStatusCounts, JobSummary, SubmitJobRequest, WasteStats,
+};
 
 /// Determines whether the caller is authorized to access or mutate the given job.
 ///
@@ -247,6 +249,17 @@ impl<R: JobRepository + Send + Sync + 'static> JobService for JobServiceImpl<R> 
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<JobStatusCounts, JobQueueError>> + Send + '_>> {
         Box::pin(async move { self.repo.count_by_status(&installations).await })
     }
+
+    fn waste_stats(
+        &self,
+        installations: Vec<String>,
+        start: chrono::DateTime<chrono::Utc>,
+        end: chrono::DateTime<chrono::Utc>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<WasteStats, JobQueueError>> + Send + '_>> {
+        Box::pin(async move {
+            self.repo.waste_stats(&installations, start, end).await
+        })
+    }
 }
 
 #[cfg(test)]
@@ -397,6 +410,49 @@ mod tests {
                 }
             }
             Ok(count)
+        }
+
+        async fn waste_stats(
+            &self,
+            installations: &[String],
+            start: chrono::DateTime<chrono::Utc>,
+            end: chrono::DateTime<chrono::Utc>,
+        ) -> Result<WasteStats, JobQueueError> {
+            let directory = self.user_directory.lock().map_err(|e| {
+                JobQueueError::Repository(format!("lock poisoned: {e}").into())
+            })?;
+            let map = self.jobs.lock().map_err(|e| {
+                JobQueueError::Repository(format!("lock poisoned: {e}").into())
+            })?;
+
+            let mut stats = WasteStats::default();
+            for job in map.values() {
+                if job.submitted_at < start || job.submitted_at > end {
+                    continue;
+                }
+                if matches!(job.status, JobStatus::Held | JobStatus::Purged) {
+                    continue;
+                }
+                if !installations.is_empty() {
+                    let site = directory
+                        .get(job.owner.as_str())
+                        .map(|(_, s)| s.clone())
+                        .unwrap_or_default();
+                    if !installations.iter().any(|i| i == &site) {
+                        continue;
+                    }
+                }
+                stats.total_jobs += 1;
+                let is_duplex = !matches!(job.options.sides, pf_common::job::Sides::OneSided);
+                if is_duplex {
+                    stats.duplex_jobs += 1;
+                    stats.duplex_impressions += u64::from(job.page_count.unwrap_or(0));
+                }
+                if matches!(job.options.color, pf_common::job::ColorMode::Grayscale) {
+                    stats.grayscale_jobs += 1;
+                }
+            }
+            Ok(stats)
         }
 
         async fn count_by_status(

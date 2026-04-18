@@ -13,7 +13,7 @@ use pf_common::job::{JobId, JobMetadata, JobStatus};
 
 use crate::error::JobQueueError;
 use crate::retention::RetentionQuery;
-use crate::service::{AdminJobSummary, JobStatusCounts};
+use crate::service::{AdminJobSummary, JobStatusCounts, WasteStats};
 
 /// Repository trait for persisting and querying job metadata.
 ///
@@ -141,4 +141,18 @@ pub trait JobRepository: Send + Sync {
         &self,
         installations: &[String],
     ) -> impl std::future::Future<Output = Result<JobStatusCounts, JobQueueError>> + Send;
+
+    /// Aggregate waste-reduction statistics over a date range.
+    ///
+    /// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+    ///
+    /// # Errors
+    ///
+    /// Returns `JobQueueError::Repository` on persistence failure.
+    fn waste_stats(
+        &self,
+        installations: &[String],
+        start: chrono::DateTime<chrono::Utc>,
+        end: chrono::DateTime<chrono::Utc>,
+    ) -> impl std::future::Future<Output = Result<WasteStats, JobQueueError>> + Send;
 }

@@ -16,6 +16,26 @@ use pf_common::job::{JobId, JobMetadata, JobStatus};
 
 use crate::error::JobQueueError;
 
+/// Aggregate waste-reduction statistics for a reporting period, scoped by
+/// the owner's installation.
+///
+/// Returned by [`JobRepository::waste_stats`](crate::repository::JobRepository::waste_stats)
+/// and [`JobService::waste_stats`] for the admin dashboard waste-reduction
+/// report. Only finalized jobs (not Held/Purged) are counted.
+///
+/// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct WasteStats {
+    /// Total jobs in the period.
+    pub total_jobs: u64,
+    /// Jobs printed duplex (`TwoSidedLongEdge` or `TwoSidedShortEdge`).
+    pub duplex_jobs: u64,
+    /// Jobs printed grayscale.
+    pub grayscale_jobs: u64,
+    /// Sum of `page_count` for duplex jobs (proxy for paper saved).
+    pub duplex_impressions: u64,
+}
+
 /// Counts of jobs grouped by [`JobStatus`], scoped by the owner's installation.
 ///
 /// Returned by [`JobRepository::count_by_status`](crate::repository::JobRepository::count_by_status)
@@ -216,4 +236,19 @@ pub trait JobService: Send + Sync {
         &self,
         installations: Vec<String>,
     ) -> Pin<Box<dyn Future<Output = Result<JobStatusCounts, JobQueueError>> + Send + '_>>;
+
+    /// Aggregate waste-reduction statistics (duplex adoption, grayscale
+    /// usage, impressions) for a date range, optionally scoped.
+    ///
+    /// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+    ///
+    /// # Errors
+    ///
+    /// Returns `JobQueueError::Repository` on persistence failure.
+    fn waste_stats(
+        &self,
+        installations: Vec<String>,
+        start: chrono::DateTime<chrono::Utc>,
+        end: chrono::DateTime<chrono::Utc>,
+    ) -> Pin<Box<dyn Future<Output = Result<WasteStats, JobQueueError>> + Send + '_>>;
 }

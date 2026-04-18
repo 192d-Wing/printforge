@@ -146,8 +146,14 @@ pub async fn run(config: GatewayConfig) -> Result<(), Box<dyn std::error::Error 
         (state.report_service.clone(), state.accounting_service.clone())
     {
         let uploader = build_report_uploader(&state.config.reports).await;
-        let generator =
-            crate::reports_generator::build_report_generator(accounting, uploader);
+        let ctx = crate::reports_generator::ReportContext {
+            accounting,
+            users: state.user_service.clone(),
+            fleet: state.fleet_service.clone(),
+            jobs: state.job_service.clone(),
+            uploader,
+        };
+        let generator = crate::reports_generator::build_report_generator(ctx);
         if let Some(handle) = background::spawn_report_worker(
             reports,
             generator,

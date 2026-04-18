@@ -19,7 +19,7 @@ use sqlx::PgPool;
 use crate::error::JobQueueError;
 use crate::repository::JobRepository;
 use crate::retention::RetentionQuery;
-use crate::service::{AdminJobSummary, JobStatusCounts};
+use crate::service::{AdminJobSummary, JobStatusCounts, WasteStats};
 
 /// `PostgreSQL`-backed job metadata repository.
 pub struct PgJobRepository {
@@ -424,6 +424,60 @@ impl JobRepository for PgJobRepository {
         Ok((summaries, u64::try_from(total).unwrap_or(0)))
     }
 
+    async fn waste_stats(
+        &self,
+        installations: &[String],
+        start: chrono::DateTime<chrono::Utc>,
+        end: chrono::DateTime<chrono::Utc>,
+    ) -> Result<WasteStats, JobQueueError> {
+        // Duplex defined as sides != 'OneSided'; grayscale = 'Grayscale'.
+        // Only non-Held/non-Purged jobs count (Held never ran; Purged was
+        // cancelled before completion).
+        let row = if installations.is_empty() {
+            sqlx::query_as::<_, WasteStatsRow>(
+                "SELECT \
+                 COUNT(*)::bigint AS total_jobs, \
+                 COUNT(*) FILTER (WHERE sides <> 'OneSided')::bigint AS duplex_jobs, \
+                 COUNT(*) FILTER (WHERE color_mode = 'Grayscale')::bigint AS grayscale_jobs, \
+                 COALESCE(SUM(page_count) FILTER (WHERE sides <> 'OneSided'), 0)::bigint \
+                   AS duplex_impressions \
+                 FROM jobs \
+                 WHERE submitted_at BETWEEN $1 AND $2 \
+                 AND status NOT IN ('Held', 'Purged')",
+            )
+            .bind(start)
+            .bind(end)
+            .fetch_one(&self.pool)
+            .await
+        } else {
+            sqlx::query_as::<_, WasteStatsRow>(
+                "SELECT \
+                 COUNT(*)::bigint AS total_jobs, \
+                 COUNT(*) FILTER (WHERE j.sides <> 'OneSided')::bigint AS duplex_jobs, \
+                 COUNT(*) FILTER (WHERE j.color_mode = 'Grayscale')::bigint AS grayscale_jobs, \
+                 COALESCE(SUM(j.page_count) FILTER (WHERE j.sides <> 'OneSided'), 0)::bigint \
+                   AS duplex_impressions \
+                 FROM jobs j JOIN users u ON j.owner_edipi = u.edipi \
+                 WHERE j.submitted_at BETWEEN $1 AND $2 \
+                 AND j.status NOT IN ('Held', 'Purged') \
+                 AND u.site_id = ANY($3)",
+            )
+            .bind(start)
+            .bind(end)
+            .bind(installations.to_vec())
+            .fetch_one(&self.pool)
+            .await
+        }
+        .map_err(|e| JobQueueError::Repository(Box::new(e)))?;
+
+        Ok(WasteStats {
+            total_jobs: u64::try_from(row.total_jobs).unwrap_or(0),
+            duplex_jobs: u64::try_from(row.duplex_jobs).unwrap_or(0),
+            grayscale_jobs: u64::try_from(row.grayscale_jobs).unwrap_or(0),
+            duplex_impressions: u64::try_from(row.duplex_impressions).unwrap_or(0),
+        })
+    }
+
     async fn count_by_status(
         &self,
         installations: &[String],
@@ -494,6 +548,15 @@ struct AdminJobRow {
     completed_at: Option<chrono::DateTime<chrono::Utc>>,
     owner_display_name: String,
     owner_site_id: String,
+}
+
+/// Internal row type for [`waste_stats`](PgJobRepository::waste_stats).
+#[derive(sqlx::FromRow)]
+struct WasteStatsRow {
+    total_jobs: i64,
+    duplex_jobs: i64,
+    grayscale_jobs: i64,
+    duplex_impressions: i64,
 }
 
 /// Internal row type for [`count_by_status`](PgJobRepository::count_by_status).
