@@ -12,6 +12,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod alert_store;
 pub mod alerting;
 pub mod config;
 pub mod discovery;
@@ -19,6 +20,7 @@ pub mod error;
 pub mod health;
 pub mod inventory;
 pub mod ipp_probe;
+pub mod pg_alert_repo;
 pub mod pg_repo;
 pub mod repository;
 pub mod service;
@@ -27,6 +29,9 @@ pub mod snmp;
 pub mod telemetry;
 
 // Re-export primary types for ergonomic use by dependent crates.
+pub use alert_store::{
+    AlertRepository, AlertService, AlertServiceImpl, AlertState, StoredAlert,
+};
 pub use alerting::{AlertCategory, AlertSeverity, FleetAlert};
 pub use config::FleetConfig;
 pub use discovery::{DiscoveredPrinter, DiscoveryMethod, PrinterLocation};

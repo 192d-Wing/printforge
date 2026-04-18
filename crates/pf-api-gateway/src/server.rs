@@ -52,6 +52,11 @@ pub struct AppState {
     ///
     /// **NIST 800-53 Rev 5:** AU-6 — Audit Record Review
     pub audit_service: Option<Arc<dyn pf_audit::AuditService>>,
+
+    /// Fleet alert service (list / acknowledge).
+    ///
+    /// **NIST 800-53 Rev 5:** SI-4 — System Monitoring
+    pub alert_service: Option<Arc<dyn pf_fleet_mgr::AlertService>>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -64,6 +69,7 @@ impl std::fmt::Debug for AppState {
             .field("fleet_service", &self.fleet_service.is_some())
             .field("accounting_service", &self.accounting_service.is_some())
             .field("audit_service", &self.audit_service.is_some())
+            .field("alert_service", &self.alert_service.is_some())
             .finish()
     }
 }
@@ -104,6 +110,7 @@ pub async fn run(config: GatewayConfig) -> Result<(), Box<dyn std::error::Error 
         fleet_service: None,
         accounting_service: None,
         audit_service: None,
+        alert_service: None,
     };
 
     let app = build_router(state);
@@ -165,6 +172,7 @@ mod tests {
             fleet_service: None,
             accounting_service: None,
             audit_service: None,
+            alert_service: None,
         };
         let cloned = state.clone();
         assert_eq!(cloned.config.listen_addr, state.config.listen_addr);

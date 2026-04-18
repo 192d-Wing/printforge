@@ -53,6 +53,9 @@ pub struct AdminState {
 
     /// User provisioning service — user listings, role assignments.
     pub users: Option<Arc<dyn pf_user_provisioning::UserService>>,
+
+    /// Fleet alert service — list + acknowledge.
+    pub alerts: Option<Arc<dyn pf_fleet_mgr::AlertService>>,
 }
 
 impl HasJwtConfig for AdminState {
@@ -80,6 +83,7 @@ impl std::fmt::Debug for AdminState {
             .field("accounting", &self.accounting.is_some())
             .field("audit", &self.audit.is_some())
             .field("users", &self.users.is_some())
+            .field("alerts", &self.alerts.is_some())
             .finish()
     }
 }
@@ -100,6 +104,7 @@ impl AdminState {
             accounting: None,
             audit: None,
             users: None,
+            alerts: None,
         }
     }
 }
