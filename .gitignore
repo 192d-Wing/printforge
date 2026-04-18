@@ -1,0 +1,45 @@
+# Rust
+/target/
+**/target/
+Cargo.lock.bak
+*.rs.bk
+*.pdb
+
+# Claude Code
+CLAUDE.md
+**/CLAUDE.md
+.claude/
+
+# Worktrees
+.worktrees/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Logs
+*.log
+logs/
+
+# Node (if any tooling)
+node_modules/
+
+# Coverage
+/coverage/
+*.lcov
+
+# sqlx offline cache
+.sqlx/

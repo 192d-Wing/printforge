@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 PrintForge Contributors
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "printforge.fullname" . }}-api-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "printforge.componentLabels" (dict "root" . "component" "api-gateway") | nindent 4 }}
+spec:
+  type: {{ .Values.apiGateway.service.type }}
+  ports:
+    - port: {{ .Values.apiGateway.service.port }}
+      targetPort: https
+      protocol: TCP
+      name: https
+  selector:
+    {{- include "printforge.selectorLabels" (dict "root" . "component" "api-gateway") | nindent 4 }}

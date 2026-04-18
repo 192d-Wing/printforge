@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 PrintForge Contributors
+
+[package]
+name = "pf-auth-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.pf-auth]
+path = ".."
+
+# Prevent this from interfering with workspaces.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "certificate_parser"
+path = "fuzz_targets/certificate_parser.rs"
+doc = false
+
+[[bin]]
+name = "pem_parser"
+path = "fuzz_targets/pem_parser.rs"
+doc = false

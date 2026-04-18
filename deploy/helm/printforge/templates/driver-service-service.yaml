@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 PrintForge Contributors
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "printforge.fullname" . }}-driver-service
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "printforge.componentLabels" (dict "root" . "component" "driver-service") | nindent 4 }}
+spec:
+  type: {{ .Values.driverService.service.type }}
+  ports:
+    - port: {{ .Values.driverService.service.port }}
+      targetPort: ipps
+      protocol: TCP
+      name: ipps
+  selector:
+    {{- include "printforge.selectorLabels" (dict "root" . "component" "driver-service") | nindent 4 }}

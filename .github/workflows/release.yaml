@@ -1,0 +1,344 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 PrintForge Contributors
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write  # Required for cosign OIDC signing
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  REGISTRY: ${{ secrets.REGISTRY_URL || 'ghcr.io' }}
+  IMAGE_NAMESPACE: ${{ secrets.REGISTRY_NAMESPACE || github.repository }}
+
+jobs:
+  # ─── CI gates (must pass before any release artifacts are produced) ────────
+  ci-gate:
+    name: CI Gate
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: printforge
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_DB: printforge_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85.0"
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@cargo-deny
+      - uses: taiki-e/install-action@cargo-audit
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: >
+          cargo clippy --workspace --all-targets --
+          -D warnings -W clippy::pedantic
+          -A clippy::module_name_repetitions
+
+      - name: Test
+        run: cargo nextest run --workspace
+        env:
+          DATABASE_URL: postgres://printforge:testpassword@localhost:5432/printforge_test
+
+      - name: Cargo deny
+        run: cargo deny check
+
+      - name: Cargo audit
+        run: cargo audit
+
+  # ─── Build and push container images ───────────────────────────────────────
+  build-images:
+    name: Build Images
+    needs: [ci-gate]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - pf-api-gateway
+          - pf-driver-service
+          - pf-cache-node
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.service }}:${{ github.ref_name }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.service }}:latest
+          build-args: |
+            SERVICE=${{ matrix.service }}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.service }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=Apache-2.0
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install cosign
+        if: ${{ secrets.COSIGN_KEY != '' }}
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image with cosign
+        if: ${{ secrets.COSIGN_KEY != '' }}
+        env:
+          COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          cosign sign --key env://COSIGN_KEY \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.service }}@${{ steps.build.outputs.digest }}"
+
+  # ─── SBOM generation ───────────────────────────────────────────────────────
+  sbom:
+    name: SBOM
+    needs: [ci-gate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85.0"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx
+
+      - name: Generate SBOM
+        run: cargo cyclonedx --all --format json
+
+      - name: Collect SBOM artifacts
+        run: |
+          mkdir -p sbom-output
+          find . -name "*.cdx.json" -not -path "./target/*" -exec cp {} sbom-output/ \;
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom-output/
+          retention-days: 365
+
+  # ─── Attach SBOM to container images ───────────────────────────────────────
+  sbom-attach:
+    name: Attach SBOM to Images
+    needs: [build-images, sbom]
+    runs-on: ubuntu-latest
+    if: ${{ secrets.COSIGN_KEY != '' }}
+    strategy:
+      matrix:
+        service:
+          - pf-api-gateway
+          - pf-driver-service
+          - pf-cache-node
+    steps:
+      - uses: sigstore/cosign-installer@v3
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sbom
+          path: sbom-output/
+
+      - name: Log in to container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Attach SBOM to image
+        env:
+          COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.service }}:${{ github.ref_name }}"
+          SBOM_FILE="sbom-output/${{ matrix.service }}.cdx.json"
+          if [ -f "$SBOM_FILE" ]; then
+            cosign attach sbom --sbom "$SBOM_FILE" "$IMAGE"
+            cosign sign --key env://COSIGN_KEY --attachment sbom "$IMAGE"
+          else
+            echo "::warning::SBOM file not found for ${{ matrix.service }}, skipping attachment"
+          fi
+
+  # ─── Helm chart packaging ─────────────────────────────────────────────────
+  helm-package:
+    name: Helm Package
+    needs: [ci-gate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Update Chart.yaml version from tag
+        run: |
+          sed -i "s/^version: .*/version: ${{ steps.version.outputs.version }}/" \
+            deploy/helm/printforge/Chart.yaml
+          sed -i "s/^appVersion: .*/appVersion: \"${{ steps.version.outputs.version }}\"/" \
+            deploy/helm/printforge/Chart.yaml
+
+      - name: Lint Helm chart
+        run: helm lint deploy/helm/printforge
+
+      - name: Package Helm chart
+        run: helm package deploy/helm/printforge --destination helm-output/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: helm-chart
+          path: helm-output/
+          retention-days: 365
+
+      - name: Push Helm chart to OCI registry
+        if: ${{ secrets.REGISTRY_USERNAME != '' }}
+        run: |
+          echo "${{ secrets.REGISTRY_PASSWORD }}" | \
+            helm registry login "${{ env.REGISTRY }}" \
+              --username "${{ secrets.REGISTRY_USERNAME }}" \
+              --password-stdin
+          helm push helm-output/printforge-${{ steps.version.outputs.version }}.tgz \
+            "oci://${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/charts"
+
+  # ─── GitHub release ────────────────────────────────────────────────────────
+  create-release:
+    name: Create GitHub Release
+    needs: [build-images, sbom, helm-package]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sbom
+          path: sbom-output/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: helm-chart
+          path: helm-output/
+
+      - name: Generate changelog from conventional commits
+        id: changelog
+        run: |
+          # Find the previous tag for changelog range
+          PREV_TAG=$(git tag --sort=-version:refname | grep '^v' | sed -n '2p')
+          if [ -z "$PREV_TAG" ]; then
+            RANGE="HEAD"
+          else
+            RANGE="${PREV_TAG}..HEAD"
+          fi
+
+          {
+            echo "changelog<<CHANGELOG_EOF"
+            echo "## What's Changed"
+            echo ""
+
+            # Features
+            FEATS=$(git log "$RANGE" --pretty=format:"%s" | grep -E "^feat(\(.*\))?:" | sed 's/^/- /' || true)
+            if [ -n "$FEATS" ]; then
+              echo "### Features"
+              echo "$FEATS"
+              echo ""
+            fi
+
+            # Fixes
+            FIXES=$(git log "$RANGE" --pretty=format:"%s" | grep -E "^fix(\(.*\))?:" | sed 's/^/- /' || true)
+            if [ -n "$FIXES" ]; then
+              echo "### Bug Fixes"
+              echo "$FIXES"
+              echo ""
+            fi
+
+            # Security
+            SECS=$(git log "$RANGE" --pretty=format:"%s" | grep -E "^sec(\(.*\))?:" | sed 's/^/- /' || true)
+            if [ -n "$SECS" ]; then
+              echo "### Security"
+              echo "$SECS"
+              echo ""
+            fi
+
+            # Performance
+            PERFS=$(git log "$RANGE" --pretty=format:"%s" | grep -E "^perf(\(.*\))?:" | sed 's/^/- /' || true)
+            if [ -n "$PERFS" ]; then
+              echo "### Performance"
+              echo "$PERFS"
+              echo ""
+            fi
+
+            # Breaking changes
+            BREAKS=$(git log "$RANGE" --pretty=format:"%B" | grep -E "^BREAKING CHANGE:" | sed 's/^/- /' || true)
+            if [ -n "$BREAKS" ]; then
+              echo "### Breaking Changes"
+              echo "$BREAKS"
+              echo ""
+            fi
+
+            echo "**Full Changelog:** https://github.com/${{ github.repository }}/compare/${PREV_TAG:-initial}...${{ github.ref_name }}"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: PrintForge ${{ github.ref_name }}
+          body: ${{ steps.changelog.outputs.changelog }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') }}
+          files: |
+            sbom-output/*.cdx.json
+            helm-output/*.tgz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

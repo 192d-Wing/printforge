@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 PrintForge Contributors
+
+apiVersion: v2
+name: printforge
+description: >-
+  Enterprise print management platform for the Department of the Air Force (DAF).
+  Provides Follow-Me secure printing, multi-vendor fleet management, and cost
+  accounting across 184 installations on NIPR and SIPR enclaves.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.28.0"
+keywords:
+  - printing
+  - follow-me
+  - fleet-management
+  - daf
+home: https://github.com/printforge/printforge
+sources:
+  - https://github.com/printforge/printforge
+maintainers:
+  - name: PrintForge Contributors
+    url: https://github.com/printforge/printforge

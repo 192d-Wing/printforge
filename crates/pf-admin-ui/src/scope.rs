@@ -1,0 +1,157 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 PrintForge Contributors
+
+//! Data scoping enforcement for the admin dashboard.
+//!
+//! **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+//!
+//! Every query MUST be scoped by the requester's role and site assignment.
+//! A `SiteAdmin` for one installation MUST NOT see data from another.
+
+use pf_common::identity::{Role, SiteId};
+
+use crate::error::AdminUiError;
+
+/// Describes the data scope visible to the current requester.
+///
+/// Built from the requester's [`Role`] list and used to filter every
+/// database query.
+///
+/// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+#[derive(Debug, Clone)]
+pub enum DataScope {
+    /// Full visibility across all sites (Fleet Admin, Auditor).
+    Global,
+    /// Visibility restricted to the listed sites (Site Admin).
+    Sites(Vec<SiteId>),
+}
+
+/// Derive the [`DataScope`] for a set of roles.
+///
+/// Fleet Admins and Auditors get [`DataScope::Global`]. Site Admins get
+/// visibility only to their assigned sites. Users without an admin role
+/// are denied access entirely.
+///
+/// # Errors
+///
+/// Returns [`AdminUiError::AccessDenied`] if none of the roles grant
+/// admin dashboard access.
+///
+/// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+pub fn derive_scope(roles: &[Role]) -> Result<DataScope, AdminUiError> {
+    let mut sites: Vec<SiteId> = Vec::new();
+
+    for role in roles {
+        match role {
+            Role::FleetAdmin | Role::Auditor => return Ok(DataScope::Global),
+            Role::SiteAdmin(site_id) => sites.push(site_id.clone()),
+            Role::User => {}
+        }
+    }
+
+    if sites.is_empty() {
+        return Err(AdminUiError::AccessDenied);
+    }
+
+    Ok(DataScope::Sites(sites))
+}
+
+/// Check that a specific site is visible under the given scope.
+///
+/// # Errors
+///
+/// Returns [`AdminUiError::ScopeViolation`] if the site is not within the
+/// requester's data scope.
+///
+/// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+pub fn require_site_access(scope: &DataScope, site: &SiteId) -> Result<(), AdminUiError> {
+    match scope {
+        DataScope::Global => Ok(()),
+        DataScope::Sites(allowed) => {
+            if allowed.iter().any(|s| s == site) {
+                Ok(())
+            } else {
+                Err(AdminUiError::ScopeViolation)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn site(name: &str) -> SiteId {
+        SiteId(name.to_string())
+    }
+
+    #[test]
+    fn nist_ac3_fleet_admin_gets_global_scope() {
+        let roles = vec![Role::FleetAdmin];
+        let scope = derive_scope(&roles).unwrap();
+        assert!(matches!(scope, DataScope::Global));
+    }
+
+    #[test]
+    fn nist_ac3_auditor_gets_global_scope() {
+        let roles = vec![Role::Auditor];
+        let scope = derive_scope(&roles).unwrap();
+        assert!(matches!(scope, DataScope::Global));
+    }
+
+    #[test]
+    fn nist_ac3_site_admin_scoped_to_own_sites() {
+        let roles = vec![
+            Role::SiteAdmin(site("langley")),
+            Role::SiteAdmin(site("ramstein")),
+        ];
+        let scope = derive_scope(&roles).unwrap();
+        match scope {
+            DataScope::Sites(sites) => {
+                assert_eq!(sites.len(), 2);
+            }
+            DataScope::Global => panic!("expected Sites scope"),
+        }
+    }
+
+    #[test]
+    fn nist_ac3_plain_user_denied_dashboard_access() {
+        let roles = vec![Role::User];
+        let result = derive_scope(&roles);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn nist_ac3_site_admin_cannot_see_other_site() {
+        let scope = DataScope::Sites(vec![site("langley")]);
+        let result = require_site_access(&scope, &site("ramstein"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn nist_ac3_site_admin_can_see_own_site() {
+        let scope = DataScope::Sites(vec![site("langley")]);
+        let result = require_site_access(&scope, &site("langley"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn nist_ac3_global_scope_can_see_any_site() {
+        let scope = DataScope::Global;
+        let result = require_site_access(&scope, &site("anywhere"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn nist_ac3_mixed_roles_fleet_admin_wins() {
+        let roles = vec![Role::SiteAdmin(site("langley")), Role::FleetAdmin];
+        let scope = derive_scope(&roles).unwrap();
+        assert!(matches!(scope, DataScope::Global));
+    }
+
+    #[test]
+    fn nist_ac3_empty_roles_denied() {
+        let result = derive_scope(&[]);
+        assert!(result.is_err());
+    }
+}

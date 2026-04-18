@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 PrintForge Contributors
+#
+# Hauler collection manifest — container images required for PrintForge
+# air-gap (SIPR) deployments.  All images are re-tagged under the
+# registry.printforge.mil namespace before transfer.
+#
+# Usage:
+#   hauler store sync --files hauler-manifest.yaml --files hauler-charts.yaml
+#   hauler store save --filename printforge-airgap-0.1.0.tar.zst
+
+apiVersion: content.hauler.cattle.io/v1alpha1
+kind: Images
+metadata:
+  name: printforge-images
+spec:
+  images:
+    # -----------------------------------------------------------------------
+    # PrintForge application images (built from Dockerfile)
+    # -----------------------------------------------------------------------
+    - name: registry.printforge.mil/printforge/pf-api-gateway:0.1.0
+    - name: registry.printforge.mil/printforge/pf-cache-node:0.1.0
+    - name: registry.printforge.mil/printforge/pf-driver-service:0.1.0
+
+    # -----------------------------------------------------------------------
+    # Infrastructure dependencies
+    # -----------------------------------------------------------------------
+    # PostgreSQL — primary datastore
+    - name: docker.io/library/postgres:16
+
+    # NATS — messaging bus with JetStream and leaf-node support
+    - name: docker.io/library/nats:2.10
+
+    # RustFS — S3-compatible object store for spool storage
+    - name: ghcr.io/rustfs/rustfs:latest
+
+    # Distroless runtime base image (used as the runtime stage in Dockerfile)
+    - name: gcr.io/distroless/cc-debian12:latest

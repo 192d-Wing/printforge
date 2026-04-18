@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 PrintForge Contributors
+#
+# Hauler collection manifest — Helm charts for PrintForge air-gap deployments.
+#
+# Usage:
+#   hauler store sync --files hauler-manifest.yaml --files hauler-charts.yaml
+
+apiVersion: content.hauler.cattle.io/v1alpha1
+kind: Charts
+metadata:
+  name: printforge-charts
+spec:
+  charts:
+    - name: printforge
+      repoURL: file://../../deploy/helm/printforge
+      version: 0.1.0

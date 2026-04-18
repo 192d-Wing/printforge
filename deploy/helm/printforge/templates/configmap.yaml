@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 PrintForge Contributors
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "printforge.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "printforge.labels" . | nindent 4 }}
+data:
+  # -- Shared environment settings
+  PF_LOG_FORMAT: {{ .Values.global.logFormat | quote }}
+  RUST_LOG: {{ .Values.global.logLevel | quote }}
+  # -- NATS connection URL (internal service)
+  {{- if .Values.nats.enabled }}
+  PF_NATS_URL: "nats://{{ include "printforge.fullname" . }}-nats:4222"
+  {{- end }}
+  # -- RustFS S3 endpoint (internal service)
+  {{- if .Values.rustfs.enabled }}
+  PF_S3_ENDPOINT: "http://{{ include "printforge.fullname" . }}-rustfs:9000"
+  {{- end }}
+  # -- PostgreSQL connection (host only; credentials via secret)
+  {{- if .Values.postgresql.enabled }}
+  PF_DATABASE_HOST: "{{ include "printforge.fullname" . }}-postgresql"
+  PF_DATABASE_NAME: {{ .Values.postgresql.auth.database | quote }}
+  {{- end }}
+  # -- API Gateway settings
+  PF_GATEWAY_LISTEN_ADDR: "0.0.0.0:{{ .Values.apiGateway.service.port }}"
+  PF_GATEWAY_MAX_BODY_SIZE: {{ .Values.apiGateway.maxBodySize | quote }}
+  PF_GATEWAY_MAX_UPLOAD_SIZE: {{ .Values.apiGateway.maxUploadSize | quote }}
+  PF_GATEWAY_SHUTDOWN_TIMEOUT_SECS: {{ .Values.apiGateway.shutdownTimeoutSecs | quote }}
+  PF_RATE_LIMIT_ENABLED: {{ .Values.apiGateway.rateLimit.enabled | quote }}
+  PF_RATE_LIMIT_PER_IP_RPS: {{ .Values.apiGateway.rateLimit.perIpRps | quote }}
+  PF_RATE_LIMIT_PER_IP_BURST: {{ .Values.apiGateway.rateLimit.perIpBurst | quote }}
+  PF_RATE_LIMIT_PER_USER_RPS: {{ .Values.apiGateway.rateLimit.perUserRps | quote }}
+  PF_RATE_LIMIT_PER_USER_BURST: {{ .Values.apiGateway.rateLimit.perUserBurst | quote }}
+  # -- Cache Node settings
+  PF_HEARTBEAT_INTERVAL_SECS: {{ .Values.cacheNode.heartbeat.intervalSecs | quote }}
+  PF_HEARTBEAT_DDIL_THRESHOLD: {{ .Values.cacheNode.heartbeat.ddilThreshold | quote }}
+  PF_HEARTBEAT_DEGRADED_THRESHOLD: {{ .Values.cacheNode.heartbeat.degradedThreshold | quote }}
+  PF_HEARTBEAT_TIMEOUT_SECS: {{ .Values.cacheNode.heartbeat.timeoutSecs | quote }}
+  PF_AUTH_CACHE_TTL_SECS: {{ .Values.cacheNode.authCache.ttlSecs | quote }}
+  PF_AUTH_CACHE_MAX_ENTRIES: {{ .Values.cacheNode.authCache.maxEntries | quote }}
+  PF_LOCAL_SPOOL_DATA_DIR: {{ .Values.cacheNode.localSpool.dataDir | quote }}
+  PF_LOCAL_SPOOL_ENCRYPT_AT_REST: {{ .Values.cacheNode.localSpool.encryptAtRest | quote }}
+  # -- Driver Service settings
+  PF_DRIVER_MAX_JOB_SIZE_BYTES: {{ .Values.driverService.maxJobSizeBytes | quote }}
+  PF_DRIVER_REQUIRE_CLIENT_CERT: {{ .Values.driverService.requireClientCert | quote }}

@@ -1,0 +1,74 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 PrintForge Contributors
+#
+# Conventional Commits enforcement for PrintForge
+
+extends:
+  - "@commitlint/config-conventional"
+
+rules:
+  type-enum:
+    - 2
+    - always
+    - - feat
+      - fix
+      - sec
+      - perf
+      - refactor
+      - test
+      - docs
+      - ci
+      - chore
+      - revert
+
+  scope-enum:
+    - 2
+    - always
+    - - common
+      - auth
+      - job-queue
+      - fleet-mgr
+      - firmware-mgr
+      - policy-engine
+      - accounting
+      - supply
+      - audit
+      - spool
+      - api-gateway
+      - admin-ui
+      - enroll-portal
+      - cache-node
+      - driver-service
+      - user-provisioning
+      - workspace
+      - ci
+      - deps
+
+  scope-empty:
+    - 2
+    - never
+
+  subject-case:
+    - 2
+    - always
+    - - lower-case
+
+  subject-max-length:
+    - 2
+    - always
+    - 72
+
+  header-max-length:
+    - 2
+    - always
+    - 100
+
+  body-max-line-length:
+    - 1
+    - always
+    - 120
+
+  footer-max-line-length:
+    - 1
+    - always
+    - 120

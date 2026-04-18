@@ -1,0 +1,94 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 PrintForge Contributors
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "printforge.fullname" . }}-driver-service
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "printforge.componentLabels" (dict "root" . "component" "driver-service") | nindent 4 }}
+spec:
+  replicas: {{ .Values.driverService.replicas }}
+  selector:
+    matchLabels:
+      {{- include "printforge.selectorLabels" (dict "root" . "component" "driver-service") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "printforge.componentLabels" (dict "root" . "component" "driver-service") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secrets.yaml") . | sha256sum }}
+    spec:
+      {{- include "printforge.podSecurityContext" . | nindent 6 }}
+      serviceAccountName: {{ include "printforge.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: driver-service
+          image: {{ include "printforge.image" (dict "root" . "image" .Values.driverService.image) }}
+          imagePullPolicy: {{ .Values.global.image.pullPolicy }}
+          command: ["pf-driver-service"]
+          ports:
+            - name: ipps
+              containerPort: {{ .Values.driverService.service.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "printforge.fullname" . }}-config
+          {{- with .Values.driverService.env }}
+          env:
+            {{- range $key, $value := . }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          {{- end }}
+          volumeMounts:
+            - name: tls-certs
+              mountPath: /etc/printforge/tls
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          {{- include "printforge.securityContext" . | nindent 10 }}
+          resources:
+            {{- toYaml .Values.driverService.resources | nindent 12 }}
+          livenessProbe:
+            tcpSocket:
+              port: ipps
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: ipps
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+      volumes:
+        - name: tls-certs
+          secret:
+            secretName: {{ default (printf "%s-tls" (include "printforge.fullname" .)) .Values.tls.existingSecret }}
+            optional: false
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+  {{- if .Values.driverService.podDisruptionBudget.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "printforge.fullname" . }}-driver-service
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "printforge.componentLabels" (dict "root" . "component" "driver-service") | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.driverService.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "printforge.selectorLabels" (dict "root" . "component" "driver-service") | nindent 6 }}
+  {{- end }}

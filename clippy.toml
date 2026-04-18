@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 PrintForge Contributors
+#
+# Clippy configuration for PrintForge workspace
+
+# Minimum supported Rust version — keeps lint suggestions compatible
+msrv = "1.85.0"

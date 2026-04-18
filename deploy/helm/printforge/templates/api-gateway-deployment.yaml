@@ -1,0 +1,113 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 PrintForge Contributors
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "printforge.fullname" . }}-api-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "printforge.componentLabels" (dict "root" . "component" "api-gateway") | nindent 4 }}
+spec:
+  replicas: {{ .Values.apiGateway.replicas }}
+  selector:
+    matchLabels:
+      {{- include "printforge.selectorLabels" (dict "root" . "component" "api-gateway") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "printforge.componentLabels" (dict "root" . "component" "api-gateway") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secrets.yaml") . | sha256sum }}
+    spec:
+      {{- include "printforge.podSecurityContext" . | nindent 6 }}
+      serviceAccountName: {{ include "printforge.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: api-gateway
+          image: {{ include "printforge.image" (dict "root" . "image" .Values.apiGateway.image) }}
+          imagePullPolicy: {{ .Values.global.image.pullPolicy }}
+          command: ["pf-api-gateway"]
+          ports:
+            - name: https
+              containerPort: {{ .Values.apiGateway.service.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "printforge.fullname" . }}-config
+          {{- with .Values.apiGateway.env }}
+          env:
+            {{- range $key, $value := . }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          {{- end }}
+          volumeMounts:
+            - name: jwt-keys
+              mountPath: /etc/printforge/jwt
+              readOnly: true
+            {{- if .Values.tls.enabled }}
+            - name: tls-certs
+              mountPath: /etc/printforge/tls
+              readOnly: true
+            {{- end }}
+            - name: tmp
+              mountPath: /tmp
+          {{- include "printforge.securityContext" . | nindent 10 }}
+          resources:
+            {{- toYaml .Values.apiGateway.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: https
+              {{- if .Values.tls.enabled }}
+              scheme: HTTPS
+              {{- end }}
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: https
+              {{- if .Values.tls.enabled }}
+              scheme: HTTPS
+              {{- end }}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+      volumes:
+        - name: jwt-keys
+          secret:
+            secretName: {{ include "printforge.fullname" . }}-jwt
+            optional: false
+        {{- if .Values.tls.enabled }}
+        - name: tls-certs
+          secret:
+            secretName: {{ default (printf "%s-tls" (include "printforge.fullname" .)) .Values.tls.existingSecret }}
+            optional: false
+        {{- end }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+  {{- if .Values.apiGateway.podDisruptionBudget.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "printforge.fullname" . }}-api-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "printforge.componentLabels" (dict "root" . "component" "api-gateway") | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.apiGateway.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "printforge.selectorLabels" (dict "root" . "component" "api-gateway") | nindent 6 }}
+  {{- end }}

@@ -1,0 +1,221 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 PrintForge Contributors
+
+# -- Global settings applied to all PrintForge services
+global:
+  image:
+    registry: ghcr.io
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  imagePullSecrets: []
+  # -- Log format: "json" (production) or "pretty" (development)
+  logFormat: json
+  # -- Default RUST_LOG level
+  logLevel: info
+
+# ---------------------------------------------------------------------------
+# PostgreSQL (Bitnami subchart or external)
+# ---------------------------------------------------------------------------
+postgresql:
+  enabled: true
+  auth:
+    database: printforge
+    username: printforge
+    # -- Reference to an existing secret with key "postgresql-password"
+    existingSecret: ""
+  primary:
+    persistence:
+      size: 20Gi
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+
+# ---------------------------------------------------------------------------
+# NATS (with JetStream and leaf-node support)
+# ---------------------------------------------------------------------------
+nats:
+  enabled: true
+  image: nats:2.10
+  replicas: 1
+  jetstream:
+    enabled: true
+    storage: 10Gi
+  leafnodes:
+    enabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# ---------------------------------------------------------------------------
+# RustFS — S3-compatible object store (spool storage)
+# ---------------------------------------------------------------------------
+rustfs:
+  enabled: true
+  image: ghcr.io/rustfs/rustfs:latest
+  replicas: 1
+  persistence:
+    size: 50Gi
+  # -- Reference to an existing secret with keys "root-user" and "root-password"
+  existingSecret: ""
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# ---------------------------------------------------------------------------
+# API Gateway (pf-api-gateway) — central HTTPS entry point
+# ---------------------------------------------------------------------------
+apiGateway:
+  replicas: 2
+  image:
+    repository: printforge/pf-api-gateway
+    # -- Overrides global.image.tag
+    tag: ""
+  service:
+    type: ClusterIP
+    port: 8443
+  env:
+    PF_LOG_FORMAT: json
+    RUST_LOG: info
+  # -- Rate limiting
+  rateLimit:
+    enabled: true
+    perIpRps: 100
+    perIpBurst: 200
+    perUserRps: 50
+    perUserBurst: 100
+  # -- Request body limits
+  maxBodySize: 1048576        # 1 MiB
+  maxUploadSize: 52428800     # 50 MiB
+  shutdownTimeoutSecs: 30
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  # -- Pod disruption budget
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+# ---------------------------------------------------------------------------
+# Cache Node (pf-cache-node) — edge deployment (DaemonSet)
+# ---------------------------------------------------------------------------
+cacheNode:
+  # -- Runs as a DaemonSet on edge (K3s) nodes with label printforge/role=cache-node
+  enabled: true
+  image:
+    repository: printforge/pf-cache-node
+    tag: ""
+  nodeSelector:
+    printforge/role: cache-node
+  service:
+    type: ClusterIP
+    port: 8081
+  env:
+    PF_LOG_FORMAT: json
+    RUST_LOG: info
+  heartbeat:
+    intervalSecs: 30
+    ddilThreshold: 3
+    degradedThreshold: 1
+    timeoutSecs: 10
+  authCache:
+    ttlSecs: 14400          # 4 hours
+    maxEntries: 10000
+  localSpool:
+    dataDir: /var/lib/printforge/spool
+    maxCapacityGi: 50
+    encryptAtRest: true
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+# ---------------------------------------------------------------------------
+# Driver Service (pf-driver-service) — IPPS endpoint for workstations
+# ---------------------------------------------------------------------------
+driverService:
+  replicas: 2
+  image:
+    repository: printforge/pf-driver-service
+    tag: ""
+  service:
+    type: ClusterIP
+    port: 443
+  env:
+    PF_LOG_FORMAT: json
+    RUST_LOG: info
+  maxJobSizeBytes: 104857600  # 100 MiB
+  requireClientCert: false
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+# ---------------------------------------------------------------------------
+# TLS Configuration
+# ---------------------------------------------------------------------------
+tls:
+  enabled: true
+  # -- Use cert-manager to provision certificates
+  certManager:
+    enabled: false
+    issuerRef:
+      name: ""
+      kind: ClusterIssuer
+  # -- Provide TLS certs via existing Kubernetes secret (type: kubernetes.io/tls)
+  existingSecret: ""
+
+# ---------------------------------------------------------------------------
+# RBAC & Service Account
+# ---------------------------------------------------------------------------
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+rbac:
+  create: true
+
+# ---------------------------------------------------------------------------
+# Ingress (optional, for external access to the API gateway)
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: printforge.example.mil
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# ---------------------------------------------------------------------------
+# Network Policies (NIST SC-7 — Boundary Protection)
+# ---------------------------------------------------------------------------
+networkPolicy:
+  enabled: true

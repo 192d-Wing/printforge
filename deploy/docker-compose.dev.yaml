@@ -1,0 +1,109 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 PrintForge Contributors
+
+# Development environment: PostgreSQL, NATS, RustFS, Keycloak
+#
+# Usage:
+#   docker compose -f deploy/docker-compose.dev.yaml up -d
+#   ./scripts/dev-setup.sh   # run migrations + seed data
+#
+# Endpoints:
+#   PostgreSQL:  localhost:5432  (printforge / printforge / printforge-dev-only)
+#   NATS:        localhost:4222  (client), localhost:8222 (monitoring)
+#   RustFS:      localhost:9000  (S3 API), localhost:9001 (console)
+#   Keycloak:    localhost:8180  (admin: admin / admin)
+#     PrintForge realm: http://localhost:8180/realms/printforge
+
+name: printforge-dev
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16 — primary data store
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_DB: printforge
+      POSTGRES_USER: printforge
+      POSTGRES_PASSWORD: printforge-dev-only
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U printforge -d printforge"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # NATS 2.10 — messaging with JetStream
+  # ---------------------------------------------------------------------------
+  nats:
+    image: nats:2.10
+    command: ["--jetstream", "--store_dir", "/data"]
+    ports:
+      - "4222:4222"   # Client
+      - "8222:8222"   # Monitoring
+    volumes:
+      - natsdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8222/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # ---------------------------------------------------------------------------
+  # MinIO — S3-compatible object store for spool data (dev stand-in for RustFS)
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Console
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Keycloak 24 — OIDC identity provider for dev/test
+  #
+  # Provides an OIDC/SAML identity provider that simulates Entra ID (NIPR)
+  # or DISA E-ICAM (SIPR). Pre-configured with a "printforge" realm,
+  # test client, and test users.
+  #
+  # Admin console: http://localhost:8180
+  # OIDC discovery: http://localhost:8180/realms/printforge/.well-known/openid-configuration
+  # ---------------------------------------------------------------------------
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HTTP_PORT: "8180"
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8180:8180"
+    volumes:
+      - ./keycloak/printforge-realm.json:/opt/keycloak/data/import/printforge-realm.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8180/health/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+
+volumes:
+  pgdata:
+  natsdata:
+  miniodata:

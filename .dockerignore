@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 PrintForge Contributors
+
+# Build artifacts
+target/
+
+# Version control
+.git/
+.gitignore
+
+# Worktrees (multi-agent development)
+.worktrees/
+
+# Documentation (not needed in image)
+*.md
+docs/
+LICENSE
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# CI / tooling configs
+.github/
+.commitlintrc.yaml
+deny.toml
+clippy.toml
+rustfmt.toml
+
+# Deployment configs (not needed in build context)
+deploy/
+
+# Scripts
+scripts/

@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 PrintForge Contributors
+
+=======================================================================
+  PrintForge {{ .Chart.AppVersion }} has been deployed.
+=======================================================================
+
+IMPORTANT: Before this deployment is production-ready, you MUST:
+
+  1. Replace placeholder secrets:
+     - {{ include "printforge.fullname" . }}-postgresql  (database password)
+     - {{ include "printforge.fullname" . }}-rustfs       (S3 credentials)
+     - {{ include "printforge.fullname" . }}-jwt          (Ed25519 public key)
+
+  2. Provision TLS certificates:
+     {{- if .Values.tls.certManager.enabled }}
+     cert-manager is enabled. Ensure your ClusterIssuer "{{ .Values.tls.certManager.issuerRef.name }}" is configured.
+     {{- else if .Values.tls.existingSecret }}
+     Using existing TLS secret: {{ .Values.tls.existingSecret }}
+     {{- else }}
+     Create a TLS secret:
+       kubectl create secret tls {{ include "printforge.fullname" . }}-tls \
+         --cert=server.crt --key=server.key -n {{ .Release.Namespace }}
+     {{- end }}
+
+SERVICES:
+
+  API Gateway:
+    Internal: {{ include "printforge.fullname" . }}-api-gateway.{{ .Release.Namespace }}.svc:{{ .Values.apiGateway.service.port }}
+    {{- if .Values.ingress.enabled }}
+    External: {{ range .Values.ingress.hosts }}{{ .host }}{{ end }}
+    {{- end }}
+
+  Driver Service (IPPS):
+    Internal: {{ include "printforge.fullname" . }}-driver-service.{{ .Release.Namespace }}.svc:{{ .Values.driverService.service.port }}
+
+  {{- if .Values.cacheNode.enabled }}
+  Cache Node:
+    Deployed as DaemonSet on nodes with label: printforge/role=cache-node
+    To label a node:
+      kubectl label node <node-name> printforge/role=cache-node
+  {{- end }}
+
+NIST 800-53 Rev 5 COMPLIANCE:
+
+  - SC-7  (Boundary Protection): Network policies are {{ if .Values.networkPolicy.enabled }}ENABLED{{ else }}DISABLED - enable for production{{ end }}
+  - SC-8  (Transmission Confidentiality): TLS is {{ if .Values.tls.enabled }}ENABLED{{ else }}DISABLED - enable for production{{ end }}
+  - SC-12 (Cryptographic Key Management): Secrets mounted as volumes (not env vars)
+  - AC-6  (Least Privilege): Containers run as non-root with read-only filesystem
+
+For more information, see: https://github.com/printforge/printforge

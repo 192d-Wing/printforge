@@ -1,0 +1,207 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 PrintForge Contributors
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # ─── Commit lint ──────────────────────────────────────────────────────────
+  commitlint:
+    name: Conventional Commits
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: wagoid/commitlint-github-action@v5
+        with:
+          configFile: .commitlintrc.yaml
+
+  # ─── Format ───────────────────────────────────────────────────────────────
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85.0"
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  # ─── Clippy ───────────────────────────────────────────────────────────────
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85.0"
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: >
+          cargo clippy --workspace --all-targets --
+          -D warnings -W clippy::pedantic
+          -A clippy::module_name_repetitions
+
+  # ─── Test ─────────────────────────────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: printforge
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_DB: printforge_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85.0"
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - name: Run tests
+        run: cargo nextest run --workspace
+        env:
+          DATABASE_URL: postgres://printforge:testpassword@localhost:5432/printforge_test
+
+  # ─── Cargo deny ──────────────────────────────────────────────────────────
+  deny:
+    name: Cargo Deny (licenses + advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85.0"
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-deny
+      - name: Run cargo deny
+        run: cargo deny check
+
+  # ─── Cargo audit ─────────────────────────────────────────────────────────
+  audit:
+    name: Security Audit (cargo audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85.0"
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-audit
+      - name: Run cargo audit
+        run: cargo audit
+
+  # ─── SPDX header check ──────────────────────────────────────────────────
+  spdx:
+    name: SPDX Headers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check SPDX headers on .rs files
+        run: |
+          MISSING=$(find . -name "*.rs" -not -path "./target/*" -exec sh -c \
+            'head -1 "$1" | grep -q "SPDX-License-Identifier: Apache-2.0" || echo "$1"' _ {} \;)
+          if [ -n "$MISSING" ]; then
+            echo "::error::The following .rs files are missing the SPDX-License-Identifier header:"
+            echo "$MISSING"
+            exit 1
+          fi
+          echo "All .rs files have the required SPDX header."
+
+  # ─── Secrets scan ────────────────────────────────────────────────────────
+  secrets-scan:
+    name: Secrets Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan for hardcoded secrets
+        run: |
+          FOUND=0
+
+          # Check for hardcoded passwords, secrets, API keys, tokens
+          if grep -rn --include="*.rs" --include="*.toml" --include="*.yaml" --include="*.yml" \
+            -E '(password|secret|api_key|token|private_key)\s*=\s*"[^"]{8,}' \
+            --exclude-dir=target --exclude-dir=.git . \
+            | grep -v "tests/fixtures" \
+            | grep -v "CLAUDE.md" \
+            | grep -v "docker-compose" \
+            | grep -v "ci.yaml" \
+            | grep -v ".commitlintrc"; then
+            echo "::warning::Potential hardcoded secrets found (see above)"
+            FOUND=1
+          fi
+
+          # Check for private key material
+          if grep -rn --include="*.rs" --include="*.toml" --include="*.yaml" \
+            -E '-----BEGIN (RSA |EC )?PRIVATE KEY-----' \
+            --exclude-dir=target --exclude-dir=.git . \
+            | grep -v "tests/fixtures"; then
+            echo "::error::Private key material found in source files"
+            FOUND=1
+          fi
+
+          # Check for real EDIPIs (10-digit numbers in suspicious contexts)
+          if grep -rn --include="*.rs" \
+            -E 'edipi.*=.*"[0-9]{10}"' \
+            --exclude-dir=target --exclude-dir=.git . \
+            | grep -v "1234567890" \
+            | grep -v "0000000000" \
+            | grep -v "tests/fixtures" \
+            | grep -v "CLAUDE.md"; then
+            echo "::warning::Potential real EDIPI found (use 1234567890 for tests)"
+            FOUND=1
+          fi
+
+          # Check for AWS-style keys
+          if grep -rn --include="*.rs" --include="*.toml" --include="*.yaml" \
+            -E '(AKIA[0-9A-Z]{16}|aws_secret_access_key)' \
+            --exclude-dir=target --exclude-dir=.git .; then
+            echo "::error::AWS credentials found in source files"
+            FOUND=1
+          fi
+
+          if [ "$FOUND" -eq 1 ]; then
+            exit 1
+          fi
+          echo "No hardcoded secrets detected."
+
+  # ─── SBOM generation ─────────────────────────────────────────────────────
+  sbom:
+    name: SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85.0"
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx
+      - name: Generate SBOM
+        run: cargo cyclonedx --all --format json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: "**/*.cdx.json"
+          retention-days: 90

@@ -1,0 +1,33 @@
+[package]
+name = "pf-enroll-portal"
+description = "Self-service enrollment portal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+pf-common = { path = "../pf-common" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+url = { workspace = true }
+
+# Enrollment
+axum = { workspace = true }
+pf-auth = { path = "../pf-auth" }
+pf-user-provisioning = { path = "../pf-user-provisioning" }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+proptest = { workspace = true }
+
+[lints]
+workspace = true

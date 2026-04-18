@@ -1,0 +1,180 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 PrintForge Contributors
+#
+# NIST 800-53 Rev 5: SC-7 — Boundary Protection
+# Network policies restrict pod-to-pod traffic to only the necessary paths.
+{{- if .Values.networkPolicy.enabled }}
+---
+# API Gateway: accepts ingress from external (Ingress controller) and
+# cache nodes; egresses to PostgreSQL, NATS, RustFS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "printforge.fullname" . }}-api-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "printforge.componentLabels" (dict "root" . "component" "api-gateway") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "printforge.selectorLabels" (dict "root" . "component" "api-gateway") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow traffic from ingress controller
+    - ports:
+        - port: {{ .Values.apiGateway.service.port }}
+          protocol: TCP
+    # Allow traffic from cache nodes
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: cache-node
+      ports:
+        - port: {{ .Values.apiGateway.service.port }}
+          protocol: TCP
+  egress:
+    # PostgreSQL
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: postgresql
+      ports:
+        - port: 5432
+          protocol: TCP
+    # NATS
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: nats
+      ports:
+        - port: 4222
+          protocol: TCP
+    # RustFS (S3)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: rustfs
+      ports:
+        - port: 9000
+          protocol: TCP
+    # DNS resolution
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+# Driver Service: accepts ingress from workstations (IPPS); egresses to
+# NATS (job queue), RustFS (spool), API Gateway.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "printforge.fullname" . }}-driver-service
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "printforge.componentLabels" (dict "root" . "component" "driver-service") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "printforge.selectorLabels" (dict "root" . "component" "driver-service") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # IPPS from workstations
+    - ports:
+        - port: {{ .Values.driverService.service.port }}
+          protocol: TCP
+  egress:
+    # NATS
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: nats
+      ports:
+        - port: 4222
+          protocol: TCP
+    # RustFS (S3)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: rustfs
+      ports:
+        - port: 9000
+          protocol: TCP
+    # API Gateway
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: api-gateway
+      ports:
+        - port: {{ .Values.apiGateway.service.port }}
+          protocol: TCP
+    # DNS resolution
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+# Cache Node: accepts ingress from local workstations and printers;
+# egresses to central API Gateway, NATS, local printers.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "printforge.fullname" . }}-cache-node
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "printforge.componentLabels" (dict "root" . "component" "cache-node") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "printforge.selectorLabels" (dict "root" . "component" "cache-node") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Local HTTP endpoint
+    - ports:
+        - port: {{ .Values.cacheNode.service.port }}
+          protocol: TCP
+    # Prometheus metrics scraping
+    - ports:
+        - port: 9090
+          protocol: TCP
+  egress:
+    # Central API Gateway
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: api-gateway
+      ports:
+        - port: {{ .Values.apiGateway.service.port }}
+          protocol: TCP
+    # NATS (leaf node connection)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: nats
+      ports:
+        - port: 4222
+          protocol: TCP
+    # Allow egress to local network printers (SNMP + IPPS)
+    - ports:
+        - port: 161
+          protocol: UDP
+        - port: 443
+          protocol: TCP
+        - port: 631
+          protocol: TCP
+        - port: 9100
+          protocol: TCP
+    # DNS resolution
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+{{- end }}

@@ -1,0 +1,160 @@
+{
+  "realm": "printforge",
+  "enabled": true,
+  "displayName": "PrintForge Dev",
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": false,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+
+  "roles": {
+    "realm": [
+      { "name": "User", "description": "Standard print user" },
+      { "name": "SiteAdmin", "description": "Site administrator" },
+      { "name": "FleetAdmin", "description": "Fleet-wide administrator" },
+      { "name": "Auditor", "description": "Compliance auditor" }
+    ]
+  },
+
+  "groups": [
+    { "name": "PrintForge-User" },
+    { "name": "PrintForge-SiteAdmin-LANGLEY" },
+    { "name": "PrintForge-FleetAdmin" },
+    { "name": "PrintForge-Auditor" }
+  ],
+
+  "clients": [
+    {
+      "clientId": "printforge-api",
+      "name": "PrintForge API",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": [
+        "http://localhost:8080/*",
+        "http://localhost:8443/*",
+        "http://localhost:3000/*"
+      ],
+      "webOrigins": [
+        "http://localhost:8080",
+        "http://localhost:3000"
+      ],
+      "protocol": "openid-connect",
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "access.token.lifespan": "3600",
+        "client.session.idle.timeout": "1800"
+      },
+      "protocolMappers": [
+        {
+          "name": "edipi-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "edipi",
+            "claim.name": "edipi",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "jsonType.label": "String"
+          }
+        },
+        {
+          "name": "groups-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "config": {
+            "claim.name": "groups",
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "org-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "org",
+            "claim.name": "org",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "jsonType.label": "String"
+          }
+        }
+      ]
+    }
+  ],
+
+  "users": [
+    {
+      "username": "DOE.JOHN.Q.1234567890",
+      "enabled": true,
+      "firstName": "John",
+      "lastName": "Doe",
+      "email": "john.doe@test.mil",
+      "attributes": {
+        "edipi": ["1234567890"],
+        "org": ["Test Unit, Langley AFB"]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "testpass123",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "PrintForge-User"
+      ]
+    },
+    {
+      "username": "SMITH.JANE.A.0987654321",
+      "enabled": true,
+      "firstName": "Jane",
+      "lastName": "Smith",
+      "email": "jane.smith@test.mil",
+      "attributes": {
+        "edipi": ["0987654321"],
+        "org": ["Test Unit, Langley AFB"]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "testpass123",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "PrintForge-SiteAdmin-LANGLEY"
+      ]
+    },
+    {
+      "username": "ADMIN.FLEET.X.1111111111",
+      "enabled": true,
+      "firstName": "Fleet",
+      "lastName": "Admin",
+      "email": "fleet.admin@test.mil",
+      "attributes": {
+        "edipi": ["1111111111"],
+        "org": ["HQ, Pentagon"]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "testpass123",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "PrintForge-FleetAdmin",
+        "PrintForge-Auditor"
+      ]
+    }
+  ]
+}
