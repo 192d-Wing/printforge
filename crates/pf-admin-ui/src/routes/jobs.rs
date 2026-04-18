@@ -10,7 +10,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use chrono::Utc;
 
-use pf_common::identity::{Identity, SiteId};
+use pf_auth::middleware::RequireAuth;
+use pf_common::identity::SiteId;
 use pf_common::job::{
     ColorMode, CostCenter, JobId, JobStatus, MediaSize, Sides,
 };
@@ -18,9 +19,10 @@ use pf_common::job::{
 use crate::error::AdminUiError;
 use crate::job_view::{JobSummary, JobViewResponse};
 use crate::scope::{derive_scope, DataScope};
+use crate::state::AdminState;
 
 /// Build the `/jobs` router.
-pub fn router() -> Router {
+pub fn router() -> Router<AdminState> {
     Router::new().route("/", get(list_jobs))
 }
 
@@ -85,7 +87,7 @@ fn stub_jobs(scope: &DataScope) -> Vec<JobSummary> {
 ///
 /// Returns `AdminUiError::AccessDenied` if the requester lacks admin access.
 async fn list_jobs(
-    Json(identity): Json<Identity>,
+    RequireAuth(identity): RequireAuth,
 ) -> Result<Json<JobViewResponse>, AdminUiError> {
     let scope = derive_scope(&identity.roles)?;
     let jobs = stub_jobs(&scope);

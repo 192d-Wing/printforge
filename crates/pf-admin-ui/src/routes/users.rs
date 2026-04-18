@@ -10,15 +10,17 @@ use axum::routing::{get, patch};
 use axum::{Json, Router};
 use chrono::Utc;
 
-use pf_common::identity::{Identity, Role, SiteId};
+use pf_auth::middleware::RequireAuth;
+use pf_common::identity::{Role, SiteId};
 use pf_common::policy::QuotaStatus;
 
 use crate::error::AdminUiError;
 use crate::scope::{derive_scope, DataScope};
+use crate::state::AdminState;
 use crate::user_mgmt::{RoleAssignmentRequest, UserListResponse, UserSummary};
 
 /// Build the `/users` router.
-pub fn router() -> Router {
+pub fn router() -> Router<AdminState> {
     Router::new()
         .route("/", get(list_users))
         .route("/{edipi}/roles", patch(update_roles))
@@ -78,7 +80,7 @@ fn stub_users(scope: &DataScope) -> Vec<UserSummary> {
 ///
 /// Returns `AdminUiError::AccessDenied` if the requester lacks admin access.
 async fn list_users(
-    Json(identity): Json<Identity>,
+    RequireAuth(identity): RequireAuth,
 ) -> Result<Json<UserListResponse>, AdminUiError> {
     let scope = derive_scope(&identity.roles)?;
     let users = stub_users(&scope);
@@ -101,8 +103,9 @@ async fn list_users(
 /// Returns `AdminUiError::AccessDenied` if the requester lacks admin access.
 /// Returns `AdminUiError::NotFound` if the target user is not found.
 async fn update_roles(
+    RequireAuth(identity): RequireAuth,
     Path(edipi): Path<String>,
-    Json((identity, request)): Json<(Identity, RoleAssignmentRequest)>,
+    Json(request): Json<RoleAssignmentRequest>,
 ) -> Result<Json<UserSummary>, AdminUiError> {
     let _scope = derive_scope(&identity.roles)?;
 

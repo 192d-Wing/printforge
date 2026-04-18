@@ -11,16 +11,18 @@ use axum::{Json, Router};
 use chrono::Utc;
 use uuid::Uuid;
 
-use pf_common::identity::{Identity, SiteId};
+use pf_auth::middleware::RequireAuth;
+use pf_common::identity::SiteId;
 
 use crate::alerts::{
     Alert, AlertCategory, AlertListResponse, AlertSeverity, AlertState,
 };
 use crate::error::AdminUiError;
 use crate::scope::{derive_scope, DataScope};
+use crate::state::AdminState;
 
 /// Build the `/alerts` router.
-pub fn router() -> Router {
+pub fn router() -> Router<AdminState> {
     Router::new()
         .route("/", get(list_alerts))
         .route("/{id}/acknowledge", post(acknowledge_alert))
@@ -83,7 +85,7 @@ fn stub_alerts(scope: &DataScope) -> Vec<Alert> {
 ///
 /// Returns `AdminUiError::AccessDenied` if the requester lacks admin access.
 async fn list_alerts(
-    Json(identity): Json<Identity>,
+    RequireAuth(identity): RequireAuth,
 ) -> Result<Json<AlertListResponse>, AdminUiError> {
     let scope = derive_scope(&identity.roles)?;
     let alerts = stub_alerts(&scope);
@@ -105,6 +107,7 @@ async fn list_alerts(
 ///
 /// Returns `AdminUiError::NotFound` if the alert does not exist.
 async fn acknowledge_alert(
+    RequireAuth(_identity): RequireAuth,
     Path(id): Path<String>,
 ) -> Result<Json<Alert>, AdminUiError> {
     let alert_id = Uuid::parse_str(&id).map_err(|_| AdminUiError::NotFound {

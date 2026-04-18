@@ -10,15 +10,17 @@ use axum::routing::get;
 use axum::{Json, Router};
 use chrono::Utc;
 
+use pf_auth::middleware::RequireAuth;
 use pf_common::fleet::{PrinterId, PrinterModel, PrinterStatus, SupplyLevel};
-use pf_common::identity::{Identity, SiteId};
+use pf_common::identity::SiteId;
 
 use crate::error::AdminUiError;
 use crate::fleet_view::{FleetPrinterSummary, FleetStatusSummary, FleetViewResponse};
 use crate::scope::{derive_scope, DataScope};
+use crate::state::AdminState;
 
 /// Build the `/fleet` router.
-pub fn router() -> Router {
+pub fn router() -> Router<AdminState> {
     Router::new()
         .route("/overview", get(fleet_overview))
         .route("/printers", get(list_printers))
@@ -86,7 +88,7 @@ fn stub_printers(scope: &DataScope) -> Vec<FleetPrinterSummary> {
 ///
 /// Returns `AdminUiError::AccessDenied` if the requester lacks admin access.
 async fn fleet_overview(
-    Json(identity): Json<Identity>,
+    RequireAuth(identity): RequireAuth,
 ) -> Result<Json<FleetStatusSummary>, AdminUiError> {
     let scope = derive_scope(&identity.roles)?;
     let printers = stub_printers(&scope);
@@ -120,7 +122,7 @@ async fn fleet_overview(
 ///
 /// Returns `AdminUiError::AccessDenied` if the requester lacks admin access.
 async fn list_printers(
-    Json(identity): Json<Identity>,
+    RequireAuth(identity): RequireAuth,
 ) -> Result<Json<FleetViewResponse>, AdminUiError> {
     let scope = derive_scope(&identity.roles)?;
     let printers = stub_printers(&scope);

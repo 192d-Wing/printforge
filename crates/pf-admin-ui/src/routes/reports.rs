@@ -11,14 +11,15 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
 
-use pf_common::identity::Identity;
+use pf_auth::middleware::RequireAuth;
 
 use crate::error::AdminUiError;
 use crate::reports::{ReportMetadata, ReportRequest};
 use crate::scope::derive_scope;
+use crate::state::AdminState;
 
 /// Build the `/reports` router.
-pub fn router() -> Router {
+pub fn router() -> Router<AdminState> {
     Router::new()
         .route("/generate", post(generate_report))
         .route("/{id}", get(get_report))
@@ -36,7 +37,8 @@ pub fn router() -> Router {
 /// an admin-level role. Returns `AdminUiError::ScopeViolation` if the
 /// requested site is outside the requester's scope.
 async fn generate_report(
-    Json((identity, request)): Json<(Identity, ReportRequest)>,
+    RequireAuth(identity): RequireAuth,
+    Json(request): Json<ReportRequest>,
 ) -> Result<Json<ReportMetadata>, AdminUiError> {
     let scope = derive_scope(&identity.roles)?;
 
@@ -70,6 +72,7 @@ async fn generate_report(
 ///
 /// Returns `AdminUiError::NotFound` if the report does not exist.
 async fn get_report(
+    RequireAuth(_identity): RequireAuth,
     Path(id): Path<String>,
 ) -> Result<Json<ReportMetadata>, AdminUiError> {
     // Stub: report lookup not yet implemented.

@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 pf-common = { path = "../pf-common" }
+pf-auth = { path = "../pf-auth" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -18,6 +19,7 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 axum = { workspace = true }
+jsonwebtoken = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

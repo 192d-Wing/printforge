@@ -18,14 +18,17 @@ pub mod users;
 
 use axum::Router;
 
+use crate::state::AdminState;
+
 /// Build the combined admin dashboard API router.
 ///
-/// Mounts each route module under its path prefix. All routes require
-/// an authenticated `Identity` and enforce data scope via
+/// Mounts each route module under its path prefix. All routes extract the
+/// caller's [`Identity`](pf_common::identity::Identity) via
+/// [`pf_auth::middleware::RequireAuth`] and enforce data scope via
 /// [`derive_scope`](crate::scope::derive_scope).
 ///
 /// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
-pub fn admin_routes() -> Router {
+pub fn admin_routes() -> Router<AdminState> {
     Router::new()
         .nest("/dashboard", dashboard::router())
         .nest("/reports", reports::router())
@@ -41,6 +44,6 @@ mod tests {
 
     #[test]
     fn admin_routes_builds_without_panic() {
-        let _router = admin_routes();
+        let _router: Router<AdminState> = admin_routes();
     }
 }

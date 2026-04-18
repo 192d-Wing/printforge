@@ -23,4 +23,7 @@ pub mod policy_mgmt;
 pub mod reports;
 pub mod routes;
 pub mod scope;
+pub mod state;
 pub mod user_mgmt;
+
+pub use state::AdminState;

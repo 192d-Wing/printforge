@@ -10,14 +10,15 @@ use axum::routing::get;
 use axum::{Json, Router};
 use chrono::Utc;
 
-use pf_common::identity::Identity;
+use pf_auth::middleware::RequireAuth;
 
 use crate::dashboard::DashboardKpis;
 use crate::error::AdminUiError;
 use crate::scope::derive_scope;
+use crate::state::AdminState;
 
 /// Build the `/dashboard` router.
-pub fn router() -> Router {
+pub fn router() -> Router<AdminState> {
     Router::new().route("/kpis", get(get_kpis))
 }
 
@@ -31,7 +32,7 @@ pub fn router() -> Router {
 /// Returns `AdminUiError::AccessDenied` if the requester does not hold
 /// an admin-level role.
 async fn get_kpis(
-    Json(identity): Json<Identity>,
+    RequireAuth(identity): RequireAuth,
 ) -> Result<Json<DashboardKpis>, AdminUiError> {
     let _scope = derive_scope(&identity.roles)?;
 
