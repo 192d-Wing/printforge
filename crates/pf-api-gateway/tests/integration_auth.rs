@@ -84,6 +84,7 @@ fn test_state_with_key(dec: DecodingKey) -> AppState {
         audit_service: None,
         alert_service: None,
         report_service: None,
+        enroll: None,
     }
 }
 

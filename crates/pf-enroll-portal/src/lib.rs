@@ -22,6 +22,7 @@ pub mod enrollment;
 pub mod error;
 pub mod idp_redirect;
 pub mod profile;
+pub mod routes;
 
 // Re-exports for convenience.
 pub use banner::{BannerAcknowledgment, BannerPresentation};
@@ -32,3 +33,4 @@ pub use enrollment::{EnrollmentOutcome, EnrollmentPhase, EnrollmentSession};
 pub use error::EnrollmentError;
 pub use idp_redirect::RedirectResult;
 pub use profile::{ColorMode, DuplexMode, UserPreferences, UserProfile};
+pub use routes::{portal_routes, EnrollState};

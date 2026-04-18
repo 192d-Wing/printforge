@@ -64,6 +64,12 @@ pub struct AppState {
     ///
     /// **NIST 800-53 Rev 5:** AU-12 — Audit Record Generation
     pub report_service: Option<Arc<dyn pf_reports::ReportService>>,
+
+    /// Enrollment portal state (config + driver catalog). When `None` the
+    /// `/enroll/*` routes are not mounted and the portal endpoints simply
+    /// return 404 — unconfigured deployments stay silent rather than
+    /// advertising a half-working portal.
+    pub enroll: Option<pf_enroll_portal::EnrollState>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -78,6 +84,7 @@ impl std::fmt::Debug for AppState {
             .field("audit_service", &self.audit_service.is_some())
             .field("alert_service", &self.alert_service.is_some())
             .field("report_service", &self.report_service.is_some())
+            .field("enroll", &self.enroll.is_some())
             .finish()
     }
 }
@@ -120,6 +127,7 @@ pub async fn run(config: GatewayConfig) -> Result<(), Box<dyn std::error::Error 
         audit_service: None,
         alert_service: None,
         report_service: None,
+        enroll: None,
     };
 
     // Spawn background tasks before the server so they're ready to accept
@@ -217,6 +225,7 @@ mod tests {
             audit_service: None,
             alert_service: None,
             report_service: None,
+            enroll: None,
         };
         let cloned = state.clone();
         assert_eq!(cloned.config.listen_addr, state.config.listen_addr);

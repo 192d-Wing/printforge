@@ -23,8 +23,10 @@ use crate::server::AppState;
 /// Routes that are explicitly allowed without authentication.
 ///
 /// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
-/// All other routes require `RequireAuth`.
-pub const PUBLIC_ROUTES: &[&str] = &["/healthz", "/readyz"];
+/// All other routes require `RequireAuth`. The `/enroll/**` prefix is a
+/// single allowlist entry covering banner, driver catalog, and `IdP`
+/// redirect — those endpoints fire BEFORE a user has a session.
+pub const PUBLIC_ROUTES: &[&str] = &["/healthz", "/readyz", "/enroll/**"];
 
 /// Build the complete `Axum` router with all middleware layers.
 ///
@@ -40,9 +42,18 @@ pub fn build_router(state: AppState) -> Router {
 
     let api_v1 = crate::routes::api_routes().nest("/admin", admin);
 
-    let public = Router::new()
+    let mut public = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz));
+
+    // Mount the enrollment portal when configured. Silent no-op when
+    // AppState.enroll is None so the endpoints 404 rather than serve
+    // half-baked responses.
+    if let Some(enroll_state) = state.enroll.clone() {
+        let enroll =
+            pf_enroll_portal::routes::portal_routes().with_state(enroll_state);
+        public = public.nest("/enroll", enroll);
+    }
 
     Router::new()
         .nest("/api/v1", api_v1)
@@ -153,6 +164,7 @@ mod tests {
             audit_service: None,
             alert_service: None,
             report_service: None,
+            enroll: None,
         }
     }
 
@@ -209,10 +221,13 @@ mod tests {
     #[tokio::test]
     async fn nist_ac3_public_routes_are_allowlisted() {
         // NIST 800-53 Rev 5: AC-3 — Access Enforcement
-        // Evidence: Only healthz/readyz are in the public allowlist.
+        // Evidence: health probes + the enrollment portal prefix are the
+        // only unauthenticated paths. Every other route MUST go through
+        // RequireAuth.
         assert!(PUBLIC_ROUTES.contains(&"/healthz"));
         assert!(PUBLIC_ROUTES.contains(&"/readyz"));
-        assert_eq!(PUBLIC_ROUTES.len(), 2);
+        assert!(PUBLIC_ROUTES.contains(&"/enroll/**"));
+        assert_eq!(PUBLIC_ROUTES.len(), 3);
     }
 
     #[tokio::test]
