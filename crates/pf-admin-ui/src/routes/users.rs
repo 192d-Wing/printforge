@@ -29,6 +29,7 @@ const DEFAULT_PAGE_SIZE: usize = 25;
 pub fn router() -> Router<AdminState> {
     Router::new()
         .route("/", get(list_users))
+        .route("/{edipi}/quota", get(get_user_quota))
         .route("/{edipi}/roles", patch(update_roles))
 }
 
@@ -152,11 +153,79 @@ async fn update_roles(
     Ok(Json(to_user_summary(updated, &HashMap::new())))
 }
 
+/// `GET /users/{edipi}/quota` — Return the richer per-user quota status
+/// (remaining, burst, period), not surfaced by the listing view.
+///
+/// Site-scope enforced: a Site Admin may only read quota for users at one
+/// of their authorized sites. A user with no quota counter returns 404
+/// rather than a sentinel body.
+///
+/// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement, AU-12 — Quota status
+/// queries are auditable.
+///
+/// # Errors
+///
+/// - `AdminUiError::AccessDenied` — caller lacks an admin role.
+/// - `AdminUiError::ScopeViolation` — target user is outside caller's sites.
+/// - `AdminUiError::NotFound` — no such user, or no quota counter for them.
+/// - `AdminUiError::ServiceUnavailable` — user or accounting service not wired.
+/// - `AdminUiError::Internal` — underlying service failure.
+async fn get_user_quota(
+    State(state): State<AdminState>,
+    RequireAuth(identity): RequireAuth,
+    Path(edipi_str): Path<String>,
+) -> Result<Json<QuotaStatusResponse>, AdminUiError> {
+    let scope = derive_scope(&identity.roles)?;
+    let users_svc = state
+        .users
+        .as_ref()
+        .ok_or(AdminUiError::ServiceUnavailable { service: "users" })?;
+    let accounting = state
+        .accounting
+        .as_ref()
+        .ok_or(AdminUiError::ServiceUnavailable {
+            service: "accounting",
+        })?;
+
+    let edipi = Edipi::new(&edipi_str).map_err(AdminUiError::Validation)?;
+
+    // Look up the target first so scope enforcement runs before the quota
+    // query. A site admin for Langley cannot peek at a Ramstein user's
+    // quota.
+    let target = users_svc.get_user(&edipi).map_err(map_user_error)?;
+    if !target.site_id.is_empty() {
+        crate::scope::require_site_access(&scope, &SiteId(target.site_id.clone()))?;
+    }
+
+    let quota = accounting
+        .get_quota_status(edipi)
+        .await
+        .map_err(map_accounting_error)?;
+
+    Ok(Json(quota))
+}
+
 /// Map a [`pf_user_provisioning::ProvisioningError`] onto the admin-ui error type.
 fn map_user_error(err: pf_user_provisioning::ProvisioningError) -> AdminUiError {
     if matches!(err, pf_user_provisioning::ProvisioningError::UserNotFound { .. }) {
         AdminUiError::NotFound {
             entity: "user".to_string(),
+        }
+    } else {
+        AdminUiError::Internal {
+            source: Box::new(err),
+        }
+    }
+}
+
+/// Map a [`pf_accounting::AccountingError`] onto the admin-ui error type.
+///
+/// `CostCenterNotFound` is the repository's "no row found" signal for quota
+/// counter lookups; surface it as a 404 rather than a 500.
+fn map_accounting_error(err: pf_accounting::AccountingError) -> AdminUiError {
+    if matches!(err, pf_accounting::AccountingError::CostCenterNotFound { .. }) {
+        AdminUiError::NotFound {
+            entity: "quota".to_string(),
         }
     } else {
         AdminUiError::Internal {
@@ -319,5 +388,24 @@ mod tests {
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"page\":1"));
         assert!(json.contains("\"total_count\":0"));
+    }
+
+    #[test]
+    fn map_accounting_error_missing_counter_becomes_not_found() {
+        // Evidence: a user with no quota counter row returns 404, not 500.
+        let err = pf_accounting::AccountingError::CostCenterNotFound {
+            code: "quota counter not found for user".to_string(),
+        };
+        let mapped = map_accounting_error(err);
+        assert!(matches!(mapped, AdminUiError::NotFound { .. }));
+    }
+
+    #[test]
+    fn map_accounting_error_non_missing_becomes_internal() {
+        let err = pf_accounting::AccountingError::InvalidChargebackPeriod {
+            message: "unused".to_string(),
+        };
+        let mapped = map_accounting_error(err);
+        assert!(matches!(mapped, AdminUiError::Internal { .. }));
     }
 }
