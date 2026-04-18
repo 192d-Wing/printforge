@@ -134,6 +134,19 @@ pub async fn run(config: GatewayConfig) -> Result<(), Box<dyn std::error::Error 
             background_handles.push(handle);
         }
     }
+    if let (Some(reports), Some(accounting)) =
+        (state.report_service.clone(), state.accounting_service.clone())
+    {
+        let generator = crate::reports_generator::build_report_generator(accounting);
+        if let Some(handle) = background::spawn_report_worker(
+            reports,
+            generator,
+            &state.config.background,
+            shutdown_rx.clone(),
+        ) {
+            background_handles.push(handle);
+        }
+    }
 
     let app = build_router(state);
 

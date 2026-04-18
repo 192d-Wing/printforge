@@ -16,6 +16,7 @@ pub mod background;
 pub mod config;
 pub mod error;
 pub mod middleware;
+pub mod reports_generator;
 pub mod router;
 pub mod routes;
 pub mod server;

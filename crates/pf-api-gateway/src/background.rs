@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
+use pf_reports::{GeneratorFn, ReportService, ReportWorker};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
@@ -70,6 +71,65 @@ pub fn spawn_alert_retention(
                 _ = shutdown.changed() => {
                     if *shutdown.borrow() {
                         info!("alert retention sweep task shutting down");
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    Some(handle)
+}
+
+/// Spawn the report-generation worker. Runs every
+/// [`report_poll_interval_secs`](BackgroundConfig::report_poll_interval_secs),
+/// draining any Pending report rows.
+///
+/// Each tick runs `worker.run_one()` in a tight-but-bounded inner loop —
+/// keep consuming until `run_one` returns `None` or errors — so a burst of
+/// enqueues drains promptly without waiting for the next interval. Errors
+/// log at `warn` and break the inner loop (the next tick will retry).
+#[must_use]
+pub fn spawn_report_worker(
+    svc: Arc<dyn ReportService>,
+    generator: GeneratorFn,
+    config: &BackgroundConfig,
+    mut shutdown: watch::Receiver<bool>,
+) -> Option<JoinHandle<()>> {
+    if !config.enabled {
+        return None;
+    }
+
+    let interval_secs = config.report_poll_interval_secs;
+    let worker = ReportWorker::new(svc, generator);
+
+    let handle = tokio::spawn(async move {
+        info!(interval_secs, "report worker task started");
+        let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    // Drain: if a burst of requests is sitting in Pending,
+                    // process them all before sleeping again. Cap at a few
+                    // per tick so one noisy tenant can't starve shutdown.
+                    for _ in 0..16 {
+                        match worker.run_one().await {
+                            Ok(Some(id)) => {
+                                info!(report_id = %id, "report processed");
+                            }
+                            Ok(None) => break,
+                            Err(e) => {
+                                warn!(error = %e, "report worker tick failed");
+                                break;
+                            }
+                        }
+                    }
+                }
+                _ = shutdown.changed() => {
+                    if *shutdown.borrow() {
+                        info!("report worker task shutting down");
                         break;
                     }
                 }
