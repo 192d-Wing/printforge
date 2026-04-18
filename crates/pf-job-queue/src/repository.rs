@@ -12,6 +12,7 @@ use pf_common::job::{JobId, JobMetadata, JobStatus};
 
 use crate::error::JobQueueError;
 use crate::retention::RetentionQuery;
+use crate::service::AdminJobSummary;
 
 /// Repository trait for persisting and querying job metadata.
 ///
@@ -91,4 +92,24 @@ pub trait JobRepository: Send + Sync {
         &self,
         ids: &[JobId],
     ) -> impl std::future::Future<Output = Result<u64, JobQueueError>> + Send;
+
+    /// List jobs for the admin dashboard, joining `users` to enrich each row
+    /// with `owner_display_name` and `owner_site_id`. When `installations` is
+    /// non-empty, only jobs whose owner's `users.site_id` is in the set are
+    /// returned.
+    ///
+    /// Returns a tuple of `(page, total_count)` where `total_count` reflects
+    /// the filter before pagination.
+    ///
+    /// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+    ///
+    /// # Errors
+    ///
+    /// Returns `JobQueueError::Repository` on persistence failure.
+    fn list_admin_scoped(
+        &self,
+        installations: &[String],
+        limit: u32,
+        offset: u32,
+    ) -> impl std::future::Future<Output = Result<(Vec<AdminJobSummary>, u64), JobQueueError>> + Send;
 }

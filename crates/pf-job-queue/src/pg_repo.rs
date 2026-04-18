@@ -18,6 +18,7 @@ use sqlx::PgPool;
 use crate::error::JobQueueError;
 use crate::repository::JobRepository;
 use crate::retention::RetentionQuery;
+use crate::service::AdminJobSummary;
 
 /// `PostgreSQL`-backed job metadata repository.
 pub struct PgJobRepository {
@@ -321,6 +322,121 @@ impl JobRepository for PgJobRepository {
         .map_err(|e| JobQueueError::Repository(Box::new(e)))?;
 
         Ok(result.rows_affected())
+    }
+
+    async fn list_admin_scoped(
+        &self,
+        installations: &[String],
+        limit: u32,
+        offset: u32,
+    ) -> Result<(Vec<AdminJobSummary>, u64), JobQueueError> {
+        // Two branches keep each path index-friendly. Without a site filter,
+        // only `idx_jobs_submitted_at` is consulted. With one, the planner
+        // can use `idx_users_site_id` and loop over the matching edipis.
+        let base_select = "SELECT j.id, j.owner_edipi, j.document_name, j.status, j.copies, \
+             j.sides, j.color_mode, j.media_size, j.cost_center_code, j.cost_center_name, \
+             j.page_count, j.submitted_at, j.released_at, j.completed_at, \
+             COALESCE(u.display_name, '') AS owner_display_name, \
+             COALESCE(u.site_id, '') AS owner_site_id \
+             FROM jobs j LEFT JOIN users u ON j.owner_edipi = u.edipi";
+
+        let (page, total) = if installations.is_empty() {
+            let rows = sqlx::query_as::<_, AdminJobRow>(&format!(
+                "{base_select} ORDER BY j.submitted_at DESC LIMIT $1 OFFSET $2"
+            ))
+            .bind(i64::from(limit))
+            .bind(i64::from(offset))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| JobQueueError::Repository(Box::new(e)))?;
+
+            let total: i64 = sqlx::query_scalar("SELECT COUNT(*)::bigint FROM jobs")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| JobQueueError::Repository(Box::new(e)))?;
+
+            (rows, total)
+        } else {
+            let rows = sqlx::query_as::<_, AdminJobRow>(&format!(
+                "{base_select} WHERE u.site_id = ANY($1) \
+                 ORDER BY j.submitted_at DESC LIMIT $2 OFFSET $3"
+            ))
+            .bind(installations.to_vec())
+            .bind(i64::from(limit))
+            .bind(i64::from(offset))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| JobQueueError::Repository(Box::new(e)))?;
+
+            let total: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*)::bigint FROM jobs j \
+                 LEFT JOIN users u ON j.owner_edipi = u.edipi \
+                 WHERE u.site_id = ANY($1)",
+            )
+            .bind(installations.to_vec())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| JobQueueError::Repository(Box::new(e)))?;
+
+            (rows, total)
+        };
+
+        let summaries = page
+            .into_iter()
+            .map(AdminJobRow::try_into_admin_summary)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok((summaries, u64::try_from(total).unwrap_or(0)))
+    }
+}
+
+/// Internal row type for [`list_admin_scoped`]. Carries everything the
+/// job row has plus the joined owner columns.
+#[derive(sqlx::FromRow)]
+struct AdminJobRow {
+    id: uuid::Uuid,
+    owner_edipi: String,
+    document_name: String,
+    status: String,
+    copies: i32,
+    sides: String,
+    color_mode: String,
+    media_size: String,
+    cost_center_code: String,
+    cost_center_name: String,
+    page_count: Option<i32>,
+    submitted_at: chrono::DateTime<chrono::Utc>,
+    released_at: Option<chrono::DateTime<chrono::Utc>>,
+    completed_at: Option<chrono::DateTime<chrono::Utc>>,
+    owner_display_name: String,
+    owner_site_id: String,
+}
+
+impl AdminJobRow {
+    fn try_into_admin_summary(self) -> Result<AdminJobSummary, JobQueueError> {
+        let job = JobRow {
+            id: self.id,
+            owner_edipi: self.owner_edipi,
+            document_name: self.document_name,
+            status: self.status,
+            copies: self.copies,
+            sides: self.sides,
+            color_mode: self.color_mode,
+            media_size: self.media_size,
+            cost_center_code: self.cost_center_code,
+            cost_center_name: self.cost_center_name,
+            page_count: self.page_count,
+            submitted_at: self.submitted_at,
+            released_at: self.released_at,
+            completed_at: self.completed_at,
+        }
+        .try_into_job()?;
+
+        Ok(AdminJobSummary {
+            job,
+            owner_display_name: self.owner_display_name,
+            owner_site_id: self.owner_site_id,
+        })
     }
 }
 

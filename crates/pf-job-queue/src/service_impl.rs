@@ -16,7 +16,7 @@ use tracing::{info, warn};
 use crate::error::JobQueueError;
 use crate::lifecycle;
 use crate::repository::JobRepository;
-use crate::service::{JobService, JobSummary, SubmitJobRequest};
+use crate::service::{AdminJobSummary, JobService, JobSummary, SubmitJobRequest};
 
 /// Determines whether the caller is authorized to access or mutate the given job.
 ///
@@ -224,6 +224,19 @@ impl<R: JobRepository + Send + Sync + 'static> JobService for JobServiceImpl<R> 
             Ok(())
         })
     }
+
+    fn list_jobs_admin(
+        &self,
+        installations: Vec<String>,
+        limit: u32,
+        offset: u32,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(Vec<AdminJobSummary>, u64), JobQueueError>> + Send + '_>> {
+        Box::pin(async move {
+            self.repo
+                .list_admin_scoped(&installations, limit, offset)
+                .await
+        })
+    }
 }
 
 #[cfg(test)]
@@ -243,13 +256,27 @@ mod tests {
 
     struct InMemoryJobRepository {
         jobs: Mutex<HashMap<uuid::Uuid, JobMetadata>>,
+        /// Optional directory mapping `owner_edipi` to `(display_name, site_id)`,
+        /// used by `list_admin_scoped` to simulate the `JOIN` on the `users` table.
+        user_directory: Mutex<HashMap<String, (String, String)>>,
     }
 
     impl InMemoryJobRepository {
         fn new() -> Self {
             Self {
                 jobs: Mutex::new(HashMap::new()),
+                user_directory: Mutex::new(HashMap::new()),
             }
+        }
+
+        /// Seed the in-memory user directory for tests that exercise
+        /// `list_admin_scoped`. Maps `owner_edipi` to `(display_name, site_id)`.
+        fn set_user(&self, edipi: &str, display_name: &str, site_id: &str) {
+            let mut dir = self.user_directory.lock().unwrap();
+            dir.insert(
+                edipi.to_string(),
+                (display_name.to_string(), site_id.to_string()),
+            );
         }
     }
 
@@ -343,6 +370,58 @@ mod tests {
                 }
             }
             Ok(count)
+        }
+
+        async fn list_admin_scoped(
+            &self,
+            installations: &[String],
+            limit: u32,
+            offset: u32,
+        ) -> Result<(Vec<AdminJobSummary>, u64), JobQueueError> {
+            // The in-memory mock has no users table to join against. Tests
+            // that need installation scoping can inject an owner_edipi ->
+            // (display_name, site_id) directory, but by default we return
+            // every job with empty owner metadata — which is sufficient to
+            // exercise pagination and service-layer plumbing.
+            let directory = self.user_directory.lock().map_err(|e| {
+                JobQueueError::Repository(format!("lock poisoned: {e}").into())
+            })?;
+            let map = self.jobs.lock().map_err(|e| {
+                JobQueueError::Repository(format!("lock poisoned: {e}").into())
+            })?;
+
+            let mut all: Vec<(JobMetadata, String, String)> = map
+                .values()
+                .map(|j| {
+                    let (name, site) = directory
+                        .get(j.owner.as_str())
+                        .cloned()
+                        .unwrap_or_default();
+                    (j.clone(), name, site)
+                })
+                .filter(|(_, _, site)| {
+                    installations.is_empty() || installations.iter().any(|i| i == site)
+                })
+                .collect();
+
+            // Newest first, to mirror pg_repo's ORDER BY submitted_at DESC.
+            all.sort_by(|a, b| b.0.submitted_at.cmp(&a.0.submitted_at));
+
+            let total = all.len() as u64;
+            let offset = offset as usize;
+            let limit = limit as usize;
+            let page = all
+                .into_iter()
+                .skip(offset)
+                .take(limit)
+                .map(|(job, owner_display_name, owner_site_id)| AdminJobSummary {
+                    job,
+                    owner_display_name,
+                    owner_site_id,
+                })
+                .collect();
+
+            Ok((page, total))
         }
     }
 
@@ -576,6 +655,67 @@ mod tests {
 
         let result = svc.get_job(user.clone(), fake_id.clone()).await;
         assert!(matches!(result, Err(JobQueueError::NotFound)));
+    }
+
+    #[tokio::test]
+    async fn nist_ac3_list_jobs_admin_enforces_site_scope() {
+        // NIST 800-53 Rev 5: AC-3 — Access Enforcement
+        // Evidence: list_jobs_admin with a non-empty installation list
+        // returns only jobs whose owner sits at one of those installations.
+        let repo = InMemoryJobRepository::new();
+        repo.set_user("1111111111", "DOE, JOHN Q.", "langley");
+        repo.set_user("2222222222", "SMITH, JANE A.", "ramstein");
+        let svc = JobServiceImpl::new(repo);
+
+        let langley_owner = make_user("1111111111");
+        let ramstein_owner = make_user("2222222222");
+        svc.submit_job(langley_owner, make_submit_request()).await.unwrap();
+        svc.submit_job(ramstein_owner, make_submit_request()).await.unwrap();
+
+        let (page, total) = svc
+            .list_jobs_admin(vec!["langley".to_string()], 25, 0)
+            .await
+            .unwrap();
+
+        assert_eq!(total, 1);
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].owner_site_id, "langley");
+        assert_eq!(page[0].owner_display_name, "DOE, JOHN Q.");
+    }
+
+    #[tokio::test]
+    async fn list_jobs_admin_global_scope_returns_all_jobs() {
+        let repo = InMemoryJobRepository::new();
+        repo.set_user("1111111111", "DOE, JOHN Q.", "langley");
+        repo.set_user("2222222222", "SMITH, JANE A.", "ramstein");
+        let svc = JobServiceImpl::new(repo);
+
+        svc.submit_job(make_user("1111111111"), make_submit_request()).await.unwrap();
+        svc.submit_job(make_user("2222222222"), make_submit_request()).await.unwrap();
+
+        let (page, total) = svc.list_jobs_admin(Vec::new(), 25, 0).await.unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(page.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_jobs_admin_paginates() {
+        let repo = InMemoryJobRepository::new();
+        repo.set_user("1111111111", "DOE, JOHN Q.", "langley");
+        let svc = JobServiceImpl::new(repo);
+
+        for _ in 0..5 {
+            svc.submit_job(make_user("1111111111"), make_submit_request()).await.unwrap();
+        }
+
+        let (page1, total) = svc.list_jobs_admin(Vec::new(), 2, 0).await.unwrap();
+        let (page2, _) = svc.list_jobs_admin(Vec::new(), 2, 2).await.unwrap();
+        let (page3, _) = svc.list_jobs_admin(Vec::new(), 2, 4).await.unwrap();
+
+        assert_eq!(total, 5);
+        assert_eq!(page1.len(), 2);
+        assert_eq!(page2.len(), 2);
+        assert_eq!(page3.len(), 1);
     }
 
     #[tokio::test]

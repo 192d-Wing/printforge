@@ -16,6 +16,25 @@ use pf_common::job::{JobId, JobMetadata, JobStatus};
 
 use crate::error::JobQueueError;
 
+/// A job row enriched with owner attributes for the admin dashboard listing.
+///
+/// Returned by [`JobService::list_jobs_admin`]. The repository layer joins
+/// the `jobs` and `users` tables so the admin SPA can render `owner_display_name`
+/// and `owner_site_id` without an extra round-trip.
+///
+/// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement (site-scoped filter)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AdminJobSummary {
+    /// The underlying job metadata.
+    pub job: JobMetadata,
+    /// Owner's display name, sourced from `users.display_name`.
+    pub owner_display_name: String,
+    /// Owner's site attribution, sourced from `users.site_id`. Empty `String`
+    /// means "unattributed" — the user has not yet logged in since the
+    /// site claim was added, or the `IdP` does not project one.
+    pub owner_site_id: String,
+}
+
 /// A lightweight summary of a job for listing endpoints.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct JobSummary {
@@ -61,6 +80,7 @@ pub struct SubmitJobRequest {
 /// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
 /// Implementations must verify caller identity before granting access to
 /// job data or performing mutations.
+#[allow(clippy::type_complexity)]
 pub trait JobService: Send + Sync {
     /// Submit a new print job. The job is created in `Held` status.
     ///
@@ -138,4 +158,24 @@ pub trait JobService: Send + Sync {
         caller: Identity,
         id: JobId,
     ) -> Pin<Box<dyn Future<Output = Result<(), JobQueueError>> + Send + '_>>;
+
+    /// List jobs across all owners, optionally scoped to a set of
+    /// installations via the owner's `users.site_id`. Intended for the
+    /// admin dashboard; unlike [`Self::list_jobs`] there is no owner-match
+    /// check — caller role enforcement is the route handler's responsibility.
+    ///
+    /// An empty `installations` vector means "no site filter" (Fleet Admin
+    /// scope). Returns a tuple of `(page, total_count)`.
+    ///
+    /// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+    ///
+    /// # Errors
+    ///
+    /// Returns `JobQueueError::Repository` on persistence failure.
+    fn list_jobs_admin(
+        &self,
+        installations: Vec<String>,
+        limit: u32,
+        offset: u32,
+    ) -> Pin<Box<dyn Future<Output = Result<(Vec<AdminJobSummary>, u64), JobQueueError>> + Send + '_>>;
 }

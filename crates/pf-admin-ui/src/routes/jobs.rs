@@ -4,141 +4,199 @@
 //! Job queue view route handlers.
 //!
 //! **NIST 800-53 Rev 5:** AC-3 — All job queries are scoped by the
-//! requester's [`DataScope`](crate::scope::DataScope).
+//! requester's [`DataScope`](crate::scope::DataScope) and translated into a
+//! filter on the owner's `users.site_id` (installations list).
 
+use axum::extract::State;
 use axum::routing::get;
 use axum::{Json, Router};
-use chrono::Utc;
 
 use pf_auth::middleware::RequireAuth;
 use pf_common::identity::SiteId;
-use pf_common::job::{
-    ColorMode, CostCenter, JobId, JobStatus, MediaSize, Sides,
-};
+use pf_job_queue::AdminJobSummary;
 
 use crate::error::AdminUiError;
 use crate::job_view::{JobSummary, JobViewResponse};
-use crate::scope::{derive_scope, DataScope};
+use crate::scope::{derive_scope, scope_to_installations};
 use crate::state::AdminState;
+
+/// Default page size when the client does not specify one.
+const DEFAULT_PAGE_SIZE: u32 = 25;
 
 /// Build the `/jobs` router.
 pub fn router() -> Router<AdminState> {
     Router::new().route("/", get(list_jobs))
 }
 
-/// Build stub job data scoped to the requester's authorized sites.
-fn stub_jobs(scope: &DataScope) -> Vec<JobSummary> {
-    let all_jobs = vec![
-        JobSummary {
-            job_id: JobId::generate(),
-            owner_display_name: "DOE, JOHN Q.".to_string(),
-            document_name: "quarterly-report.pdf".to_string(),
-            status: JobStatus::Held,
-            page_count: Some(12),
-            copies: 1,
-            sides: Sides::TwoSidedLongEdge,
-            color: ColorMode::Grayscale,
-            media: MediaSize::Letter,
-            cost_center: CostCenter::new("CC-0001", "Test Unit")
-                .expect("valid stub cost center"),
-            site_id: SiteId("langley".to_string()),
-            target_printer: None,
-            submitted_at: Utc::now(),
-            released_at: None,
-            completed_at: None,
-        },
-        JobSummary {
-            job_id: JobId::generate(),
-            owner_display_name: "SMITH, JANE A.".to_string(),
-            document_name: "travel-orders.pdf".to_string(),
-            status: JobStatus::Printing,
-            page_count: Some(3),
-            copies: 2,
-            sides: Sides::OneSided,
-            color: ColorMode::Color,
-            media: MediaSize::Letter,
-            cost_center: CostCenter::new("CC-0002", "Ops Squadron")
-                .expect("valid stub cost center"),
-            site_id: SiteId("ramstein".to_string()),
-            target_printer: Some(
-                pf_common::fleet::PrinterId::new("PRN-0099")
-                    .expect("valid stub printer ID"),
-            ),
-            submitted_at: Utc::now(),
-            released_at: Some(Utc::now()),
-            completed_at: None,
-        },
-    ];
-
-    match scope {
-        DataScope::Global => all_jobs,
-        DataScope::Sites(sites) => all_jobs
-            .into_iter()
-            .filter(|j| sites.contains(&j.site_id))
-            .collect(),
-    }
-}
-
 /// `GET /jobs` — Return a scoped, paginated job listing.
+///
+/// Backed by
+/// [`JobService::list_jobs_admin`](pf_job_queue::JobService::list_jobs_admin)
+/// with a site-scope filter derived from the caller's roles. The filter
+/// targets the owner's `users.site_id` column via a join, so a job
+/// submitted at Langley is attributed to the Langley site admin.
 ///
 /// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
 ///
 /// # Errors
 ///
-/// Returns `AdminUiError::AccessDenied` if the requester lacks admin access.
+/// - `AdminUiError::AccessDenied` if the caller lacks an admin role.
+/// - `AdminUiError::ServiceUnavailable` if the job service is not wired.
+/// - `AdminUiError::Internal` on underlying job-service failure.
 async fn list_jobs(
+    State(state): State<AdminState>,
     RequireAuth(identity): RequireAuth,
 ) -> Result<Json<JobViewResponse>, AdminUiError> {
     let scope = derive_scope(&identity.roles)?;
-    let jobs = stub_jobs(&scope);
-    let total_count = jobs.len() as u64;
+    let jobs = state
+        .jobs
+        .as_ref()
+        .ok_or(AdminUiError::ServiceUnavailable { service: "jobs" })?;
+
+    let (summaries, total_count) = jobs
+        .list_jobs_admin(scope_to_installations(&scope), DEFAULT_PAGE_SIZE, 0)
+        .await
+        .map_err(|e| AdminUiError::Internal {
+            source: Box::new(e),
+        })?;
+
+    let page = summaries.into_iter().map(to_job_summary).collect();
 
     Ok(Json(JobViewResponse {
-        jobs,
+        jobs: page,
         total_count,
         page: 1,
-        page_size: 25,
+        page_size: DEFAULT_PAGE_SIZE,
     }))
+}
+
+/// Map the job-queue [`AdminJobSummary`] onto the admin-ui wire type.
+///
+/// - `owner_display_name` falls back to the owner's EDIPI when the user
+///   record carries no display name (e.g., unattributed / new provision).
+/// - `site_id` is wrapped from the raw `users.site_id` string.
+/// - `target_printer` is always `None` today; the `jobs` table has no
+///   target printer column yet.
+fn to_job_summary(s: AdminJobSummary) -> JobSummary {
+    let AdminJobSummary {
+        job,
+        owner_display_name,
+        owner_site_id,
+    } = s;
+
+    let owner_display_name = if owner_display_name.is_empty() {
+        job.owner.as_str().to_string()
+    } else {
+        owner_display_name
+    };
+
+    JobSummary {
+        job_id: job.id,
+        owner_display_name,
+        document_name: job.document_name,
+        status: job.status,
+        page_count: job.page_count,
+        copies: job.options.copies,
+        sides: job.options.sides,
+        color: job.options.color,
+        media: job.options.media,
+        cost_center: job.cost_center,
+        site_id: SiteId(owner_site_id),
+        target_printer: None,
+        submitted_at: job.submitted_at,
+        released_at: job.released_at,
+        completed_at: job.completed_at,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use pf_common::identity::Edipi;
+    use pf_common::job::{
+        ColorMode, CostCenter, JobId, JobMetadata, JobStatus, MediaSize, PrintOptions, Sides,
+    };
+
+    fn sample_admin_summary(edipi: &str, site: &str, display_name: &str) -> AdminJobSummary {
+        AdminJobSummary {
+            job: JobMetadata {
+                id: JobId::generate(),
+                owner: Edipi::new(edipi).unwrap(),
+                document_name: "report.pdf".to_string(),
+                status: JobStatus::Held,
+                options: PrintOptions {
+                    copies: 1,
+                    sides: Sides::TwoSidedLongEdge,
+                    color: ColorMode::Grayscale,
+                    media: MediaSize::Letter,
+                },
+                cost_center: CostCenter::new("CC-0001", "Test Unit").unwrap(),
+                page_count: Some(12),
+                submitted_at: Utc::now(),
+                released_at: None,
+                completed_at: None,
+            },
+            owner_display_name: display_name.to_string(),
+            owner_site_id: site.to_string(),
+        }
+    }
+
+    #[test]
+    fn to_job_summary_wraps_site_id() {
+        let mapped = to_job_summary(sample_admin_summary(
+            "1111111111",
+            "langley",
+            "DOE, JOHN Q.",
+        ));
+        assert_eq!(mapped.site_id, SiteId("langley".to_string()));
+        assert_eq!(mapped.owner_display_name, "DOE, JOHN Q.");
+    }
+
+    #[test]
+    fn to_job_summary_falls_back_to_edipi_when_display_name_empty() {
+        // Unattributed user — the join returned an empty display_name.
+        // Fall back to the EDIPI so the UI still shows something useful.
+        let mapped = to_job_summary(sample_admin_summary("1111111111", "", ""));
+        assert_eq!(mapped.owner_display_name, "1111111111");
+        assert_eq!(mapped.site_id, SiteId(String::new()));
+    }
+
+    #[test]
+    fn to_job_summary_copies_print_options() {
+        let mapped = to_job_summary(sample_admin_summary(
+            "1111111111",
+            "langley",
+            "DOE, JOHN Q.",
+        ));
+        assert_eq!(mapped.sides, Sides::TwoSidedLongEdge);
+        assert_eq!(mapped.color, ColorMode::Grayscale);
+        assert_eq!(mapped.media, MediaSize::Letter);
+        assert_eq!(mapped.copies, 1);
+    }
+
+    #[test]
+    fn to_job_summary_target_printer_is_none() {
+        // The jobs table has no target_printer column yet; the admin-ui
+        // wire type always reports None until that migration lands.
+        let mapped = to_job_summary(sample_admin_summary(
+            "1111111111",
+            "langley",
+            "DOE, JOHN Q.",
+        ));
+        assert!(mapped.target_printer.is_none());
+    }
 
     #[test]
     fn job_view_response_serializes() {
-        let jobs = stub_jobs(&DataScope::Global);
         let response = JobViewResponse {
-            total_count: jobs.len() as u64,
-            jobs,
+            jobs: vec![],
+            total_count: 0,
             page: 1,
-            page_size: 25,
+            page_size: DEFAULT_PAGE_SIZE,
         };
         let json = serde_json::to_string(&response).unwrap();
-        assert!(json.contains("quarterly-report.pdf"));
         assert!(json.contains("\"page\":1"));
-    }
-
-    #[test]
-    fn nist_ac3_site_admin_sees_only_own_site_jobs() {
-        // NIST 800-53 Rev 5: AC-3 — Access Enforcement
-        // Evidence: Site admin for langley cannot see ramstein jobs.
-        let scope = DataScope::Sites(vec![SiteId("langley".to_string())]);
-        let jobs = stub_jobs(&scope);
-        assert!(jobs
-            .iter()
-            .all(|j| j.site_id == SiteId("langley".to_string())));
-        assert!(!jobs.is_empty());
-    }
-
-    #[test]
-    fn nist_ac3_global_scope_sees_all_jobs() {
-        // NIST 800-53 Rev 5: AC-3 — Access Enforcement
-        // Evidence: Fleet admin sees jobs from all sites.
-        let scope = DataScope::Global;
-        let jobs = stub_jobs(&scope);
-        let sites: Vec<&SiteId> = jobs.iter().map(|j| &j.site_id).collect();
-        assert!(sites.contains(&&SiteId("langley".to_string())));
-        assert!(sites.contains(&&SiteId("ramstein".to_string())));
+        assert!(json.contains("\"page_size\":25"));
     }
 }
