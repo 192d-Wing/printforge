@@ -75,8 +75,8 @@ async fn list_jobs(
 /// - `owner_display_name` falls back to the owner's EDIPI when the user
 ///   record carries no display name (e.g., unattributed / new provision).
 /// - `site_id` is wrapped from the raw `users.site_id` string.
-/// - `target_printer` is always `None` today; the `jobs` table has no
-///   target printer column yet.
+/// - `target_printer` is `Some` once a release decision has been made and
+///   `None` for jobs still Held.
 fn to_job_summary(s: AdminJobSummary) -> JobSummary {
     let AdminJobSummary {
         job,
@@ -102,7 +102,7 @@ fn to_job_summary(s: AdminJobSummary) -> JobSummary {
         media: job.options.media,
         cost_center: job.cost_center,
         site_id: SiteId(owner_site_id),
-        target_printer: None,
+        target_printer: job.target_printer,
         submitted_at: job.submitted_at,
         released_at: job.released_at,
         completed_at: job.completed_at,
@@ -133,6 +133,7 @@ mod tests {
                 },
                 cost_center: CostCenter::new("CC-0001", "Test Unit").unwrap(),
                 page_count: Some(12),
+                target_printer: None,
                 submitted_at: Utc::now(),
                 released_at: None,
                 completed_at: None,
@@ -176,15 +177,26 @@ mod tests {
     }
 
     #[test]
-    fn to_job_summary_target_printer_is_none() {
-        // The jobs table has no target_printer column yet; the admin-ui
-        // wire type always reports None until that migration lands.
+    fn to_job_summary_held_job_has_no_target_printer() {
+        // A Held job has never been routed; target_printer is None.
         let mapped = to_job_summary(sample_admin_summary(
             "1111111111",
             "langley",
             "DOE, JOHN Q.",
         ));
         assert!(mapped.target_printer.is_none());
+    }
+
+    #[test]
+    fn to_job_summary_released_job_carries_target_printer() {
+        use pf_common::fleet::PrinterId;
+        let mut summary = sample_admin_summary("1111111111", "langley", "DOE, JOHN Q.");
+        summary.job.target_printer = Some(PrinterId::new("PRN-0042").unwrap());
+        let mapped = to_job_summary(summary);
+        assert_eq!(
+            mapped.target_printer,
+            Some(PrinterId::new("PRN-0042").unwrap())
+        );
     }
 
     #[test]

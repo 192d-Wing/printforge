@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::ValidationError;
+use crate::fleet::PrinterId;
 use crate::identity::Edipi;
 
 /// A time-ordered job identifier (`UUIDv7`).
@@ -144,6 +145,11 @@ pub struct JobMetadata {
     pub options: PrintOptions,
     pub cost_center: CostCenter,
     pub page_count: Option<u32>,
+    /// Printer the job was released to, if any. Set at the
+    /// Held -> Waiting transition by the release path. `None` while the
+    /// job is still Held or if it ended without being routed.
+    #[serde(default)]
+    pub target_printer: Option<PrinterId>,
     pub submitted_at: DateTime<Utc>,
     pub released_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,

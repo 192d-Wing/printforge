@@ -78,6 +78,7 @@ mod tests {
             options: PrintOptions::default(),
             cost_center: CostCenter::new("CC-001", "Test Unit").unwrap(),
             page_count: Some(5),
+            target_printer: None,
             submitted_at: Utc::now() - ChronoDuration::hours(100),
             released_at: None,
             completed_at,

@@ -50,6 +50,7 @@ pub fn build_job_metadata(attrs: &IppAttributes) -> Result<JobMetadata, JobQueue
         options,
         cost_center,
         page_count: attrs.page_count,
+        target_printer: None,
         submitted_at: Utc::now(),
         released_at: None,
         completed_at: None,

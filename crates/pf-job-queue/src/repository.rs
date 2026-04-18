@@ -7,6 +7,7 @@
 //! Implementations must ensure that audit-related metadata (state transitions,
 //! timestamps) is append-only and cannot be retroactively modified.
 
+use pf_common::fleet::PrinterId;
 use pf_common::identity::Edipi;
 use pf_common::job::{JobId, JobMetadata, JobStatus};
 
@@ -71,6 +72,20 @@ pub trait JobRepository: Send + Sync {
         &self,
         id: &JobId,
         new_status: JobStatus,
+    ) -> impl std::future::Future<Output = Result<(), JobQueueError>> + Send;
+
+    /// Atomically transition a job to `Waiting` (or `Releasing`) and set its
+    /// `target_printer_id`. Called by the release path so the dispatch
+    /// printer is persisted alongside the state change.
+    ///
+    /// # Errors
+    ///
+    /// Returns `JobQueueError::NotFound` if the job does not exist.
+    /// Returns `JobQueueError::Repository` on persistence failure.
+    fn release(
+        &self,
+        id: &JobId,
+        printer_id: &PrinterId,
     ) -> impl std::future::Future<Output = Result<(), JobQueueError>> + Send;
 
     /// Find jobs eligible for retention purge.

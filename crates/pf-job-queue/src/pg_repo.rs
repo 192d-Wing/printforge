@@ -9,6 +9,7 @@
 //! is maintained separately in `pf-audit`.
 
 use chrono::Utc;
+use pf_common::fleet::PrinterId;
 use pf_common::identity::Edipi;
 use pf_common::job::{
     ColorMode, CostCenter, JobId, JobMetadata, JobStatus, MediaSize, PrintOptions, Sides,
@@ -47,6 +48,7 @@ struct JobRow {
     cost_center_code: String,
     cost_center_name: String,
     page_count: Option<i32>,
+    target_printer_id: Option<String>,
     submitted_at: chrono::DateTime<chrono::Utc>,
     released_at: Option<chrono::DateTime<chrono::Utc>>,
     completed_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -65,6 +67,13 @@ impl JobRow {
         let cost_center = CostCenter::new(&self.cost_center_code, &self.cost_center_name)
             .map_err(JobQueueError::Validation)?;
 
+        let target_printer = self
+            .target_printer_id
+            .as_deref()
+            .map(PrinterId::new)
+            .transpose()
+            .map_err(JobQueueError::Validation)?;
+
         Ok(JobMetadata {
             id,
             owner,
@@ -78,6 +87,7 @@ impl JobRow {
             },
             cost_center,
             page_count: self.page_count.map(|p| u32::try_from(p).unwrap_or(0)),
+            target_printer,
             submitted_at: self.submitted_at,
             released_at: self.released_at,
             completed_at: self.completed_at,
@@ -178,8 +188,8 @@ impl JobRepository for PgJobRepository {
         sqlx::query(
             "INSERT INTO jobs (id, owner_edipi, document_name, status, copies, sides, \
              color_mode, media_size, cost_center_code, cost_center_name, page_count, \
-             submitted_at, released_at, completed_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+             target_printer_id, submitted_at, released_at, completed_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
         )
         .bind(job.id.as_uuid())
         .bind(job.owner.as_str())
@@ -192,6 +202,7 @@ impl JobRepository for PgJobRepository {
         .bind(&job.cost_center.code)
         .bind(&job.cost_center.name)
         .bind(job.page_count.map(|p| i32::try_from(p).unwrap_or(i32::MAX)))
+        .bind(job.target_printer.as_ref().map(pf_common::fleet::PrinterId::as_str))
         .bind(job.submitted_at)
         .bind(job.released_at)
         .bind(job.completed_at)
@@ -205,8 +216,8 @@ impl JobRepository for PgJobRepository {
     async fn get_by_id(&self, id: &JobId) -> Result<JobMetadata, JobQueueError> {
         let row = sqlx::query_as::<_, JobRow>(
             "SELECT id, owner_edipi, document_name, status, copies, sides, color_mode, \
-             media_size, cost_center_code, cost_center_name, page_count, submitted_at, \
-             released_at, completed_at FROM jobs WHERE id = $1",
+             media_size, cost_center_code, cost_center_name, page_count, \
+             target_printer_id, submitted_at, released_at, completed_at FROM jobs WHERE id = $1",
         )
         .bind(id.as_uuid())
         .fetch_optional(&self.pool)
@@ -220,8 +231,8 @@ impl JobRepository for PgJobRepository {
     async fn list_by_owner(&self, owner: &Edipi) -> Result<Vec<JobMetadata>, JobQueueError> {
         let rows = sqlx::query_as::<_, JobRow>(
             "SELECT id, owner_edipi, document_name, status, copies, sides, color_mode, \
-             media_size, cost_center_code, cost_center_name, page_count, submitted_at, \
-             released_at, completed_at FROM jobs WHERE owner_edipi = $1 ORDER BY submitted_at DESC",
+             media_size, cost_center_code, cost_center_name, page_count, \
+             target_printer_id, submitted_at, released_at, completed_at FROM jobs WHERE owner_edipi = $1 ORDER BY submitted_at DESC",
         )
         .bind(owner.as_str())
         .fetch_all(&self.pool)
@@ -234,8 +245,8 @@ impl JobRepository for PgJobRepository {
     async fn list_by_status(&self, status: JobStatus) -> Result<Vec<JobMetadata>, JobQueueError> {
         let rows = sqlx::query_as::<_, JobRow>(
             "SELECT id, owner_edipi, document_name, status, copies, sides, color_mode, \
-             media_size, cost_center_code, cost_center_name, page_count, submitted_at, \
-             released_at, completed_at FROM jobs WHERE status = $1 ORDER BY submitted_at DESC",
+             media_size, cost_center_code, cost_center_name, page_count, \
+             target_printer_id, submitted_at, released_at, completed_at FROM jobs WHERE status = $1 ORDER BY submitted_at DESC",
         )
         .bind(status_to_str(status))
         .fetch_all(&self.pool)
@@ -243,6 +254,29 @@ impl JobRepository for PgJobRepository {
         .map_err(|e| JobQueueError::Repository(Box::new(e)))?;
 
         rows.into_iter().map(JobRow::try_into_job).collect()
+    }
+
+    async fn release(
+        &self,
+        id: &JobId,
+        printer_id: &PrinterId,
+    ) -> Result<(), JobQueueError> {
+        let rows_affected = sqlx::query(
+            "UPDATE jobs SET status = 'Waiting', target_printer_id = $1, \
+             released_at = NOW() WHERE id = $2",
+        )
+        .bind(printer_id.as_str())
+        .bind(id.as_uuid())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| JobQueueError::Repository(Box::new(e)))?
+        .rows_affected();
+
+        if rows_affected == 0 {
+            return Err(JobQueueError::NotFound);
+        }
+
+        Ok(())
     }
 
     async fn update_status(&self, id: &JobId, new_status: JobStatus) -> Result<(), JobQueueError> {
@@ -291,8 +325,8 @@ impl JobRepository for PgJobRepository {
 
         let rows = sqlx::query_as::<_, JobRow>(
             "SELECT id, owner_edipi, document_name, status, copies, sides, color_mode, \
-             media_size, cost_center_code, cost_center_name, page_count, submitted_at, \
-             released_at, completed_at FROM jobs \
+             media_size, cost_center_code, cost_center_name, page_count, \
+             target_printer_id, submitted_at, released_at, completed_at FROM jobs \
              WHERE status IN ('Completed', 'Failed') \
              AND COALESCE(completed_at, submitted_at) < $1 \
              ORDER BY submitted_at LIMIT $2",
@@ -335,7 +369,8 @@ impl JobRepository for PgJobRepository {
         // can use `idx_users_site_id` and loop over the matching edipis.
         let base_select = "SELECT j.id, j.owner_edipi, j.document_name, j.status, j.copies, \
              j.sides, j.color_mode, j.media_size, j.cost_center_code, j.cost_center_name, \
-             j.page_count, j.submitted_at, j.released_at, j.completed_at, \
+             j.page_count, j.target_printer_id, j.submitted_at, j.released_at, \
+             j.completed_at, \
              COALESCE(u.display_name, '') AS owner_display_name, \
              COALESCE(u.site_id, '') AS owner_site_id \
              FROM jobs j LEFT JOIN users u ON j.owner_edipi = u.edipi";
@@ -453,6 +488,7 @@ struct AdminJobRow {
     cost_center_code: String,
     cost_center_name: String,
     page_count: Option<i32>,
+    target_printer_id: Option<String>,
     submitted_at: chrono::DateTime<chrono::Utc>,
     released_at: Option<chrono::DateTime<chrono::Utc>>,
     completed_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -486,6 +522,7 @@ impl AdminJobRow {
             cost_center_code: self.cost_center_code,
             cost_center_name: self.cost_center_name,
             page_count: self.page_count,
+            target_printer_id: self.target_printer_id,
             submitted_at: self.submitted_at,
             released_at: self.released_at,
             completed_at: self.completed_at,

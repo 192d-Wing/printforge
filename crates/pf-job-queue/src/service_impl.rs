@@ -82,6 +82,7 @@ impl<R: JobRepository + Send + Sync + 'static> JobService for JobServiceImpl<R> 
                 options: request.options,
                 cost_center: request.cost_center,
                 page_count: request.page_count,
+                target_printer: None,
                 submitted_at: Utc::now(),
                 released_at: None,
                 completed_at: None,
@@ -141,7 +142,7 @@ impl<R: JobRepository + Send + Sync + 'static> JobService for JobServiceImpl<R> 
         &self,
         caller: Identity,
         id: JobId,
-        _printer_id: PrinterId,
+        printer_id: PrinterId,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<JobMetadata, JobQueueError>> + Send + '_>> {
         Box::pin(async move {
             let job = self.repo.get_by_id(&id).await?;
@@ -156,7 +157,9 @@ impl<R: JobRepository + Send + Sync + 'static> JobService for JobServiceImpl<R> 
                 std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
             )?;
 
-            self.repo.update_status(&id, JobStatus::Waiting).await?;
+            // Atomically set status + target printer so a concurrent read
+            // can't observe Waiting with a null target_printer_id.
+            self.repo.release(&id, &printer_id).await?;
 
             // Re-fetch to return updated metadata.
             let updated = self.repo.get_by_id(&id).await?;
@@ -353,6 +356,23 @@ mod tests {
             if matches!(new_status, JobStatus::Completed | JobStatus::Failed) {
                 job.completed_at = Some(Utc::now());
             }
+            Ok(())
+        }
+
+        async fn release(
+            &self,
+            id: &JobId,
+            printer_id: &PrinterId,
+        ) -> Result<(), JobQueueError> {
+            let mut map = self.jobs.lock().map_err(|e| {
+                JobQueueError::Repository(format!("lock poisoned: {e}").into())
+            })?;
+            let job = map
+                .get_mut(id.as_uuid())
+                .ok_or(JobQueueError::NotFound)?;
+            job.status = JobStatus::Waiting;
+            job.target_printer = Some(printer_id.clone());
+            job.released_at = Some(Utc::now());
             Ok(())
         }
 
