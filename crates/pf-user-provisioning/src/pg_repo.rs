@@ -39,6 +39,7 @@ struct UserRow {
     edipi: String,
     display_name: String,
     organization: String,
+    site_id: String,
     roles_json: serde_json::Value,
     cost_centers_json: serde_json::Value,
     preferences_json: serde_json::Value,
@@ -96,6 +97,7 @@ impl UserRow {
             edipi,
             display_name: self.display_name,
             organization: self.organization,
+            site_id: self.site_id,
             roles,
             cost_centers,
             preferences,
@@ -133,9 +135,9 @@ impl UserRepository for PgUserRepository {
         let result = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
                 sqlx::query_as::<_, UserRow>(
-                    "SELECT id, edipi, display_name, organization, roles_json, cost_centers_json, \
-                     preferences_json, status, provisioning_source, created_at, updated_at, \
-                     last_login_at FROM users WHERE edipi = $1",
+                    "SELECT id, edipi, display_name, organization, site_id, roles_json, \
+                     cost_centers_json, preferences_json, status, provisioning_source, \
+                     created_at, updated_at, last_login_at FROM users WHERE edipi = $1",
                 )
                 .bind(&edipi_str)
                 .fetch_optional(&pool)
@@ -172,6 +174,7 @@ impl UserRepository for PgUserRepository {
         let edipi_str = user.edipi.as_str().to_string();
         let display_name = user.display_name.clone();
         let organization = user.organization.clone();
+        let site_id = user.site_id.clone();
         let status = status_to_str(user.status).to_string();
         let prov_source = provisioning_source_to_str(user.provisioning_source).to_string();
         let created_at = user.created_at;
@@ -181,15 +184,16 @@ impl UserRepository for PgUserRepository {
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
                 sqlx::query(
-                    "INSERT INTO users (id, edipi, display_name, organization, roles_json, \
-                     cost_centers_json, preferences_json, status, provisioning_source, \
-                     created_at, updated_at, last_login_at) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+                    "INSERT INTO users (id, edipi, display_name, organization, site_id, \
+                     roles_json, cost_centers_json, preferences_json, status, \
+                     provisioning_source, created_at, updated_at, last_login_at) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
                 )
                 .bind(id)
                 .bind(&edipi_str)
                 .bind(&display_name)
                 .bind(&organization)
+                .bind(&site_id)
                 .bind(&roles_json)
                 .bind(&cost_centers_json)
                 .bind(&preferences_json)
@@ -228,6 +232,7 @@ impl UserRepository for PgUserRepository {
         let edipi_str = user.edipi.as_str().to_string();
         let display_name = user.display_name.clone();
         let organization = user.organization.clone();
+        let site_id = user.site_id.clone();
         let status = status_to_str(user.status).to_string();
         let prov_source = provisioning_source_to_str(user.provisioning_source).to_string();
         let updated_at = user.updated_at;
@@ -236,13 +241,14 @@ impl UserRepository for PgUserRepository {
         let rows_affected = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
                 sqlx::query(
-                    "UPDATE users SET display_name = $1, organization = $2, roles_json = $3, \
-                     cost_centers_json = $4, preferences_json = $5, status = $6, \
-                     provisioning_source = $7, updated_at = $8, last_login_at = $9 \
-                     WHERE edipi = $10",
+                    "UPDATE users SET display_name = $1, organization = $2, site_id = $3, \
+                     roles_json = $4, cost_centers_json = $5, preferences_json = $6, \
+                     status = $7, provisioning_source = $8, updated_at = $9, \
+                     last_login_at = $10 WHERE edipi = $11",
                 )
                 .bind(&display_name)
                 .bind(&organization)
+                .bind(&site_id)
                 .bind(&roles_json)
                 .bind(&cost_centers_json)
                 .bind(&preferences_json)
@@ -307,7 +313,7 @@ impl UserRepository for PgUserRepository {
         let rows: Vec<UserRow> = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
                 sqlx::query_as::<_, UserRow>(
-                    "SELECT id, edipi, display_name, organization, roles_json, \
+                    "SELECT id, edipi, display_name, organization, site_id, roles_json, \
                      cost_centers_json, preferences_json, status, provisioning_source, \
                      created_at, updated_at, last_login_at FROM users WHERE status = $1 \
                      ORDER BY created_at",

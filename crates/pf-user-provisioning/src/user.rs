@@ -78,6 +78,14 @@ pub struct ProvisionedUser {
     /// Organizational unit / command (from `IdP` claims).
     pub organization: String,
 
+    /// Site / installation the user is attributed to (from `IdP` claim
+    /// `site` or `site_id`). Empty string means "unattributed" — such
+    /// users are visible only under a Fleet Admin scope.
+    ///
+    /// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+    #[serde(default)]
+    pub site_id: String,
+
     /// Assigned `PrintForge` roles (derived from `IdP` group mappings).
     pub roles: Vec<Role>,
 
@@ -122,6 +130,7 @@ mod tests {
             edipi: Edipi::new("1234567890").unwrap(),
             display_name: "DOE, JOHN Q.".to_string(),
             organization: "Test Unit, Test Base AFB".to_string(),
+            site_id: String::new(),
             roles: vec![Role::User],
             cost_centers: vec![CostCenter::new("CC001", "Test Cost Center").unwrap()],
             preferences: UserPreferences::default(),

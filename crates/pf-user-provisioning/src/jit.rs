@@ -118,6 +118,7 @@ fn create_user_from_claims(
             .organization
             .clone()
             .unwrap_or_else(|| "Unknown".to_string()),
+        site_id: claims.site_id.clone().unwrap_or_default(),
         roles,
         cost_centers,
         preferences: UserPreferences::default(),
@@ -160,6 +161,7 @@ mod tests {
             display_name: Some("DOE, JOHN Q.".to_string()),
             organization: Some("42 CS, Maxwell AFB".to_string()),
             email: Some("john.doe@test.mil".to_string()),
+            site_id: None,
             groups: vec!["PrintForge-Users".to_string()],
             cost_center_code: Some("CC001".to_string()),
             cost_center_name: Some("Test Squadron".to_string()),

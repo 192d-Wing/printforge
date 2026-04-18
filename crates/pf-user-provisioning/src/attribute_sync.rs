@@ -27,6 +27,8 @@ pub enum ChangedAttribute {
     DisplayName,
     /// The organization changed.
     Organization,
+    /// The site / installation attribution changed.
+    SiteId,
     /// The roles changed.
     Roles,
     /// The cost centers changed.
@@ -99,6 +101,17 @@ pub fn sync_attributes(
         }
     }
 
+    if changes.contains(ChangedAttribute::SiteId) {
+        if let Some(ref site) = claims.site_id {
+            info!(
+                old = %user.site_id,
+                new = %site,
+                "site_id changed"
+            );
+            user.site_id.clone_from(site);
+        }
+    }
+
     if changes.contains(ChangedAttribute::Roles) {
         let role_result = evaluate_role_mappings(
             &config.role_mappings,
@@ -142,6 +155,13 @@ fn detect_changes(
     if let Some(ref org) = claims.organization {
         if *org != user.organization {
             changed.push(ChangedAttribute::Organization);
+        }
+    }
+
+    // Site / installation attribution.
+    if let Some(ref site) = claims.site_id {
+        if *site != user.site_id {
+            changed.push(ChangedAttribute::SiteId);
         }
     }
 
@@ -206,6 +226,7 @@ mod tests {
             edipi: Edipi::new("1234567890").unwrap(),
             display_name: "DOE, JOHN Q.".to_string(),
             organization: "42 CS, Maxwell AFB".to_string(),
+            site_id: "maxwell".to_string(),
             roles: vec![Role::User],
             cost_centers: vec![CostCenter::new("CC001", "Test Squadron").unwrap()],
             preferences: UserPreferences::default(),
@@ -223,6 +244,7 @@ mod tests {
             display_name: Some("DOE, JOHN Q.".to_string()),
             organization: Some("42 CS, Maxwell AFB".to_string()),
             email: None,
+            site_id: Some("maxwell".to_string()),
             groups: vec!["PrintForge-Users".to_string()],
             cost_center_code: Some("CC001".to_string()),
             cost_center_name: Some("Test Squadron".to_string()),
@@ -299,6 +321,21 @@ mod tests {
 
         let updated = sync_attributes(&config, user, &claims).unwrap();
         assert!(updated.last_login_at.is_some());
+    }
+
+    #[test]
+    fn nist_ac3_syncs_changed_site_id() {
+        // NIST 800-53 Rev 5: AC-3 — Access Enforcement
+        // Evidence: when the IdP updates a user's site claim (e.g., PCS
+        // move between installations), the stored record is updated so
+        // site-scoped admin queries see the user under the new site.
+        let config = test_config();
+        let user = test_user();
+        let mut claims = test_claims();
+        claims.site_id = Some("ramstein".to_string());
+
+        let updated = sync_attributes(&config, user, &claims).unwrap();
+        assert_eq!(updated.site_id, "ramstein");
     }
 
     #[test]

@@ -110,6 +110,7 @@ fn make_test_user(edipi_str: &str, name: &str, org: &str) -> ProvisionedUser {
         edipi: Edipi::new(edipi_str).unwrap(),
         display_name: name.to_string(),
         organization: org.to_string(),
+        site_id: String::new(),
         roles: vec![Role::User],
         cost_centers: vec![CostCenter::new("CC001", "Test Center").unwrap()],
         preferences: UserPreferences::default(),

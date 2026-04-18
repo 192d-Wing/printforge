@@ -317,6 +317,10 @@ pub fn scim_user_to_provisioned(
         edipi,
         display_name,
         organization,
+        // SCIM schema has no standard site attribute — users provisioned
+        // via SCIM start unattributed and get their site_id on their first
+        // interactive login (JIT attribute sync from the OIDC `site` claim).
+        site_id: String::new(),
         roles: vec![Role::User],
         cost_centers,
         preferences: UserPreferences::default(),
@@ -362,6 +366,7 @@ mod tests {
             edipi: Edipi::new("1234567890").unwrap(),
             display_name: "DOE, JOHN Q.".to_string(),
             organization: "Test Unit, Test Base AFB".to_string(),
+            site_id: String::new(),
             roles: vec![Role::User],
             cost_centers: vec![CostCenter::new("CC001", "Test Cost Center").unwrap()],
             preferences: UserPreferences::default(),

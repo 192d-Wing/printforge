@@ -30,6 +30,12 @@ pub struct NormalizedClaims {
     pub organization: Option<String>,
     /// Email address.
     pub email: Option<String>,
+    /// Site / installation identifier (from `IdP` claim `site` or `site_id`).
+    ///
+    /// Used to scope admin queries (AC-3). Absent for `IdP`s that do not
+    /// project a site claim; such users are unattributed until a claim
+    /// arrives on a subsequent login.
+    pub site_id: Option<String>,
     /// `IdP` group memberships (raw group names from the `IdP`).
     pub groups: Vec<String>,
     /// Cost center code from `IdP` claims (if present).
@@ -93,6 +99,12 @@ pub fn normalize_oidc_claims(
         .and_then(serde_json::Value::as_str)
         .map(String::from);
 
+    let site_id = obj
+        .get("site")
+        .or_else(|| obj.get("site_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(String::from);
+
     let groups = extract_string_array(obj, "groups");
 
     let cost_center_code = obj
@@ -111,6 +123,7 @@ pub fn normalize_oidc_claims(
         display_name,
         organization,
         email,
+        site_id,
         groups,
         cost_center_code,
         cost_center_name,
@@ -146,6 +159,8 @@ pub fn normalize_saml_claims<S: ::std::hash::BuildHasher>(
     let email = first_value(attributes, "urn:oid:0.9.2342.19200300.100.1.3")
         .or_else(|| first_value(attributes, "email"));
 
+    let site_id = first_value(attributes, "site").or_else(|| first_value(attributes, "site_id"));
+
     let groups = attributes
         .get("urn:oid:1.3.6.1.4.1.5923.1.1.1.7")
         .or_else(|| attributes.get("groups"))
@@ -162,6 +177,7 @@ pub fn normalize_saml_claims<S: ::std::hash::BuildHasher>(
         display_name,
         organization,
         email,
+        site_id,
         groups,
         cost_center_code,
         cost_center_name,
@@ -221,6 +237,42 @@ mod tests {
         assert_eq!(normalized.groups.len(), 2);
         assert_eq!(normalized.cost_center_code.as_deref(), Some("CC001"));
         assert_eq!(normalized.source, ClaimsSource::Oidc);
+    }
+
+    #[test]
+    fn nist_ac3_oidc_extracts_site_claim() {
+        // NIST 800-53 Rev 5: AC-3 — Access Enforcement
+        // Evidence: the OIDC `site` claim is normalized into NormalizedClaims
+        // so JIT provisioning can attribute the user to an installation.
+        let claims = serde_json::json!({
+            "sub": "1234567890",
+            "site": "maxwell"
+        });
+        let normalized = normalize_oidc_claims(&claims).unwrap();
+        assert_eq!(normalized.site_id.as_deref(), Some("maxwell"));
+    }
+
+    #[test]
+    fn oidc_accepts_site_id_claim_as_fallback() {
+        // Some IdPs project the claim as `site_id` instead of `site`.
+        let claims = serde_json::json!({
+            "sub": "1234567890",
+            "site_id": "ramstein"
+        });
+        let normalized = normalize_oidc_claims(&claims).unwrap();
+        assert_eq!(normalized.site_id.as_deref(), Some("ramstein"));
+    }
+
+    #[test]
+    fn nist_ac3_saml_extracts_site_attribute() {
+        let mut attributes = HashMap::new();
+        attributes.insert(
+            "urn:oid:1.3.6.1.4.1.5923.1.1.1.6".to_string(),
+            vec!["1234567890".to_string()],
+        );
+        attributes.insert("site".to_string(), vec!["maxwell".to_string()]);
+        let normalized = normalize_saml_claims(&attributes).unwrap();
+        assert_eq!(normalized.site_id.as_deref(), Some("maxwell"));
     }
 
     #[test]

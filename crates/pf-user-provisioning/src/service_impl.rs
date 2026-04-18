@@ -139,6 +139,7 @@ mod tests {
             edipi: Edipi::new(edipi_str).unwrap(),
             display_name: "DOE, TEST T.".to_string(),
             organization: "Test Unit, Test Base AFB".to_string(),
+            site_id: String::new(),
             roles: vec![Role::User],
             cost_centers: vec![CostCenter::new("CC001", "Test").unwrap()],
             preferences: UserPreferences::default(),
