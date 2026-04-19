@@ -18,7 +18,9 @@ use pf_common::policy::QuotaStatus;
 use pf_user_provisioning::{ProvisionedUser, UserFilter, UserStatus};
 
 use crate::error::AdminUiError;
-use crate::scope::{derive_scope, scope_to_installations};
+use crate::scope::{
+    derive_scope, require_can_grant_role, require_target_site_access, scope_to_installations,
+};
 use crate::state::AdminState;
 use crate::user_mgmt::{RoleAssignmentRequest, UserListResponse, UserSummary};
 
@@ -128,11 +130,19 @@ async fn update_roles(
 
     let edipi = Edipi::new(&edipi_str).map_err(AdminUiError::Validation)?;
 
-    // Look up the target's site before applying the update so we can enforce
-    // site scope. A site admin may not edit a user at another site.
+    // Look up the target's site before applying the update so we can
+    // enforce site scope. Fails closed on an unattributed target
+    // (site_id = ""): only Fleet Admins may mutate users whose site
+    // claim hasn't landed yet — a Site Admin must never reach them.
     let existing = users_svc.get_user(&edipi).map_err(map_user_error)?;
-    if !existing.site_id.is_empty() {
-        crate::scope::require_site_access(&scope, &SiteId(existing.site_id.clone()))?;
+    require_target_site_access(&scope, &existing.site_id)?;
+
+    // Role-ladder check: a caller may not grant a role they themselves
+    // don't hold authority over. Site Admins may only grant User or
+    // SiteAdmin at their own site; Fleet Admins may grant anything;
+    // everyone else is rejected.
+    for role in &request.roles {
+        require_can_grant_role(&identity.roles, role)?;
     }
 
     tracing::info!(
@@ -190,12 +200,11 @@ async fn get_user_quota(
     let edipi = Edipi::new(&edipi_str).map_err(AdminUiError::Validation)?;
 
     // Look up the target first so scope enforcement runs before the quota
-    // query. A site admin for Langley cannot peek at a Ramstein user's
-    // quota.
+    // query. Fails closed on unattributed users — a Site Admin cannot
+    // read quota for a user whose site hasn't been assigned yet, only
+    // Fleet Admins can.
     let target = users_svc.get_user(&edipi).map_err(map_user_error)?;
-    if !target.site_id.is_empty() {
-        crate::scope::require_site_access(&scope, &SiteId(target.site_id.clone()))?;
-    }
+    require_target_site_access(&scope, &target.site_id)?;
 
     let quota = accounting
         .get_quota_status(edipi)

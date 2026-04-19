@@ -25,7 +25,7 @@ use crate::error::AdminUiError;
 use crate::reports::{
     ReportFormat as WireFormat, ReportKind as WireKind, ReportMetadata, ReportRequest,
 };
-use crate::scope::derive_scope;
+use crate::scope::{derive_scope, require_site_filter};
 use crate::state::AdminState;
 
 /// Build the `/reports` router.
@@ -66,9 +66,12 @@ async fn generate_report(
         .as_ref()
         .ok_or(AdminUiError::ServiceUnavailable { service: "reports" })?;
 
-    if let Some(ref site) = request.site_id {
-        crate::scope::require_site_access(&scope, site)?;
-    }
+    // A site-scoped caller MUST specify a site they're authorized for;
+    // `None` would otherwise propagate into the generator as "no filter"
+    // and produce fleet-wide output, which a Site Admin is not
+    // authorized to receive. Fleet Admins (Global scope) may omit
+    // site_id to request fleet-wide reports.
+    require_site_filter(&scope, request.site_id.as_ref())?;
 
     let record = reports_svc
         .enqueue(NewReport {

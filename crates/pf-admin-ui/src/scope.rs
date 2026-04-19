@@ -97,6 +97,117 @@ pub fn require_site_access(scope: &DataScope, site: &SiteId) -> Result<(), Admin
     }
 }
 
+/// Check that a mutation against a target row with the given `site_id` is
+/// authorized under the caller's scope.
+///
+/// Unlike [`require_site_access`], this variant takes the raw site string
+/// and **fails closed on empty**: an unattributed row (`site_id = ""`) is
+/// not reachable by any non-Global caller. This closes a bypass where a
+/// `SiteAdmin` could modify users / rows that had not yet been assigned a
+/// site (pre-migration data, `SCIM`-provisioned rows before first login,
+/// or `JIT` rows whose `OIDC` claim lacked `site`).
+///
+/// # Errors
+///
+/// Returns [`AdminUiError::ScopeViolation`] if the target is outside the
+/// caller's scope OR unattributed and the caller is not Global.
+///
+/// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+pub fn require_target_site_access(
+    scope: &DataScope,
+    site_id: &str,
+) -> Result<(), AdminUiError> {
+    match scope {
+        DataScope::Global => Ok(()),
+        DataScope::Sites(allowed) => {
+            if site_id.is_empty() {
+                return Err(AdminUiError::ScopeViolation);
+            }
+            if allowed.iter().any(|s| s.0 == site_id) {
+                Ok(())
+            } else {
+                Err(AdminUiError::ScopeViolation)
+            }
+        }
+    }
+}
+
+/// Require that an Option-typed site filter is either present and in the
+/// caller's scope, or absent only when the caller is Global.
+///
+/// Used at endpoints that accept `site_id: Option<SiteId>` as a filter.
+/// A site-scoped caller passing `None` would otherwise mean "no filter"
+/// (fleet-wide), which is a privilege escalation. This helper forces
+/// site-scoped callers to specify a site they're authorized for.
+///
+/// # Errors
+///
+/// Returns [`AdminUiError::ScopeViolation`] if the caller is site-scoped
+/// and the filter is `None`, or if the supplied site is outside scope.
+///
+/// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement
+pub fn require_site_filter(
+    scope: &DataScope,
+    site_id: Option<&SiteId>,
+) -> Result<(), AdminUiError> {
+    match scope {
+        DataScope::Global => Ok(()),
+        DataScope::Sites(_) => match site_id {
+            Some(site) => require_site_access(scope, site),
+            None => Err(AdminUiError::ScopeViolation),
+        },
+    }
+}
+
+/// Check whether the caller's role set permits granting `role_to_grant`
+/// to another user.
+///
+/// Rules:
+/// - `FleetAdmin` may grant any role (including `FleetAdmin` or `Auditor`).
+/// - `SiteAdmin(X)` may grant `User` or `SiteAdmin(X)` only — never
+///   `FleetAdmin`, `Auditor`, or a `SiteAdmin` at a different site.
+/// - Anyone else (including `Auditor` alone) may not grant any role.
+///   `Auditor` is read-only per the role model — letting it mutate role
+///   assignments would defeat the separation of duties that Auditor
+///   exists to enforce.
+///
+/// # Errors
+///
+/// Returns [`AdminUiError::AccessDenied`] when the caller cannot grant
+/// the requested role.
+///
+/// **NIST 800-53 Rev 5:** AC-3 — Access Enforcement, AC-6 — Least
+/// Privilege.
+pub fn require_can_grant_role(
+    caller_roles: &[Role],
+    role_to_grant: &Role,
+) -> Result<(), AdminUiError> {
+    if caller_roles.iter().any(|r| matches!(r, Role::FleetAdmin)) {
+        return Ok(());
+    }
+
+    match role_to_grant {
+        Role::User => {
+            if caller_roles.iter().any(|r| matches!(r, Role::SiteAdmin(_))) {
+                Ok(())
+            } else {
+                Err(AdminUiError::AccessDenied)
+            }
+        }
+        Role::SiteAdmin(target_site) => {
+            let ok = caller_roles
+                .iter()
+                .any(|r| matches!(r, Role::SiteAdmin(s) if s == target_site));
+            if ok {
+                Ok(())
+            } else {
+                Err(AdminUiError::AccessDenied)
+            }
+        }
+        Role::FleetAdmin | Role::Auditor => Err(AdminUiError::AccessDenied),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,5 +299,153 @@ mod tests {
     fn nist_ac3_empty_roles_denied() {
         let result = derive_scope(&[]);
         assert!(result.is_err());
+    }
+
+    // ── require_target_site_access (fail-closed on empty site_id) ────
+
+    #[test]
+    fn nist_ac3_target_site_access_global_allows_empty() {
+        // Global scope is the one case where an unattributed row is
+        // still reachable — Fleet Admins may touch anything, including
+        // pre-migration / SCIM-unattributed rows.
+        let scope = DataScope::Global;
+        assert!(require_target_site_access(&scope, "").is_ok());
+        assert!(require_target_site_access(&scope, "anywhere").is_ok());
+    }
+
+    #[test]
+    fn nist_ac3_target_site_access_site_scope_rejects_empty() {
+        // Evidence against the "empty site_id bypass" class of vuln:
+        // a SiteAdmin cannot touch an unattributed row.
+        let scope = DataScope::Sites(vec![site("langley")]);
+        let result = require_target_site_access(&scope, "");
+        assert!(matches!(result, Err(AdminUiError::ScopeViolation)));
+    }
+
+    #[test]
+    fn nist_ac3_target_site_access_site_scope_rejects_other_site() {
+        let scope = DataScope::Sites(vec![site("langley")]);
+        let result = require_target_site_access(&scope, "ramstein");
+        assert!(matches!(result, Err(AdminUiError::ScopeViolation)));
+    }
+
+    #[test]
+    fn nist_ac3_target_site_access_site_scope_allows_own_site() {
+        let scope = DataScope::Sites(vec![site("langley")]);
+        assert!(require_target_site_access(&scope, "langley").is_ok());
+    }
+
+    // ── require_site_filter (reject None for site-scoped callers) ────
+
+    #[test]
+    fn nist_ac3_site_filter_global_allows_none() {
+        // Fleet Admin may omit site_id to request fleet-wide data.
+        let scope = DataScope::Global;
+        assert!(require_site_filter(&scope, None).is_ok());
+    }
+
+    #[test]
+    fn nist_ac3_site_filter_site_scope_rejects_none() {
+        // Site Admin MUST specify a site — "no filter" would leak
+        // across site boundaries.
+        let scope = DataScope::Sites(vec![site("langley")]);
+        let result = require_site_filter(&scope, None);
+        assert!(matches!(result, Err(AdminUiError::ScopeViolation)));
+    }
+
+    #[test]
+    fn nist_ac3_site_filter_site_scope_accepts_own_site() {
+        let scope = DataScope::Sites(vec![site("langley")]);
+        assert!(require_site_filter(&scope, Some(&site("langley"))).is_ok());
+    }
+
+    #[test]
+    fn nist_ac3_site_filter_site_scope_rejects_other_site() {
+        let scope = DataScope::Sites(vec![site("langley")]);
+        let result = require_site_filter(&scope, Some(&site("ramstein")));
+        assert!(matches!(result, Err(AdminUiError::ScopeViolation)));
+    }
+
+    // ── require_can_grant_role (role-ladder enforcement) ─────────────
+
+    #[test]
+    fn nist_ac6_fleet_admin_can_grant_any_role() {
+        let caller = vec![Role::FleetAdmin];
+        for target in [
+            Role::User,
+            Role::Auditor,
+            Role::FleetAdmin,
+            Role::SiteAdmin(site("langley")),
+        ] {
+            assert!(require_can_grant_role(&caller, &target).is_ok(),
+                "FleetAdmin should be able to grant {target:?}");
+        }
+    }
+
+    #[test]
+    fn nist_ac6_site_admin_cannot_grant_fleet_admin() {
+        // Evidence against the primary privilege-escalation vuln:
+        // a SiteAdmin cannot promote anyone (including themself) to
+        // FleetAdmin.
+        let caller = vec![Role::SiteAdmin(site("langley"))];
+        let result = require_can_grant_role(&caller, &Role::FleetAdmin);
+        assert!(matches!(result, Err(AdminUiError::AccessDenied)));
+    }
+
+    #[test]
+    fn nist_ac6_site_admin_cannot_grant_auditor() {
+        let caller = vec![Role::SiteAdmin(site("langley"))];
+        let result = require_can_grant_role(&caller, &Role::Auditor);
+        assert!(matches!(result, Err(AdminUiError::AccessDenied)));
+    }
+
+    #[test]
+    fn nist_ac6_site_admin_cannot_grant_cross_site_site_admin() {
+        let caller = vec![Role::SiteAdmin(site("langley"))];
+        let result = require_can_grant_role(
+            &caller,
+            &Role::SiteAdmin(site("ramstein")),
+        );
+        assert!(matches!(result, Err(AdminUiError::AccessDenied)));
+    }
+
+    #[test]
+    fn nist_ac6_site_admin_can_grant_own_site_site_admin() {
+        let caller = vec![Role::SiteAdmin(site("langley"))];
+        assert!(require_can_grant_role(
+            &caller,
+            &Role::SiteAdmin(site("langley")),
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn nist_ac6_site_admin_can_grant_user() {
+        let caller = vec![Role::SiteAdmin(site("langley"))];
+        assert!(require_can_grant_role(&caller, &Role::User).is_ok());
+    }
+
+    #[test]
+    fn nist_ac6_auditor_alone_cannot_grant_anything() {
+        // Auditor is a read-only role; letting it mutate role
+        // assignments would defeat separation of duties.
+        let caller = vec![Role::Auditor];
+        for target in [
+            Role::User,
+            Role::Auditor,
+            Role::FleetAdmin,
+            Role::SiteAdmin(site("langley")),
+        ] {
+            let result = require_can_grant_role(&caller, &target);
+            assert!(matches!(result, Err(AdminUiError::AccessDenied)),
+                "Auditor should not be able to grant {target:?}");
+        }
+    }
+
+    #[test]
+    fn nist_ac6_plain_user_cannot_grant_anything() {
+        let caller = vec![Role::User];
+        let result = require_can_grant_role(&caller, &Role::User);
+        assert!(matches!(result, Err(AdminUiError::AccessDenied)));
     }
 }
